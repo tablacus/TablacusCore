@@ -26,7 +26,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
 		} while (*lpCmdLine == 0x20);
 	}
 	WCHAR pszPath[MAX_PATHEX];
-	::GetModuleFileName(NULL, pszPath, MAX_PATHEX);
+	::GetModuleFileName(nullptr, pszPath, MAX_PATHEX);
 	::PathRemoveFileSpec(pszPath);
 	::PathCchAppend(pszPath, MAX_PATHEX, L"lib\\TablacusCore.dll");
 	LPCWSTR pszError = L"404 File Not Found";
@@ -37,8 +37,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
 		if (_RunDLLW) {
 			STARTUPINFO si;
 			::GetStartupInfo(&si);
-			_RunDLLW(NULL, hDll, lpCmdLine, (si.dwFlags & STARTF_USESHOWWINDOW) ? si.wShowWindow : SW_SHOWDEFAULT);
-			pszError = NULL;
+			_RunDLLW(nullptr, hDll, lpCmdLine, (si.dwFlags & STARTF_USESHOWWINDOW) ? si.wShowWindow : SW_SHOWDEFAULT);
+			pszError = nullptr;
 		}
 		::FreeLibrary(hDll);
 	}
@@ -47,7 +47,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance,
 		if (hDll) {
 			LPFNMessageBoxW _MessageBoxW = (LPFNMessageBoxW)::GetProcAddress(hDll, "MessageBoxW");
 			if (_MessageBoxW) {
-				_MessageBoxW(NULL, pszPath, pszError, MB_OK | MB_ICONERROR);
+				_MessageBoxW(nullptr, pszPath, pszError, MB_OK | MB_ICONERROR);
 			}
 			::FreeLibrary(hDll);
 		}

@@ -1,7 +1,6 @@
 #if defined(_WINDLL) || defined(_DEBUG)
 #include "darkmode.h"
 
-extern HWND g_hwndMain;
 extern std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 extern int g_nException;
 extern JSValue g_pMBText;
@@ -18,12 +17,12 @@ extern IDropSource* teFindDropSource();
 
 std::unordered_map<HWND, HWND> g_umDlgProc;
 
-LPFNSetPreferredAppMode _SetPreferredAppMode = NULL;
-LPFNAllowDarkModeForWindow _AllowDarkModeForWindow = NULL;
-LPFNShouldAppsUseDarkMode _ShouldAppsUseDarkMode = NULL;
-LPFNRefreshImmersiveColorPolicyState _RefreshImmersiveColorPolicyState = NULL;
-LPFNSetWindowCompositionAttribute _SetWindowCompositionAttribute = NULL;
-LPFNDwmSetWindowAttribute _DwmSetWindowAttribute = NULL;
+LPFNSetPreferredAppMode _SetPreferredAppMode = nullptr;
+LPFNAllowDarkModeForWindow _AllowDarkModeForWindow = nullptr;
+LPFNShouldAppsUseDarkMode _ShouldAppsUseDarkMode = nullptr;
+LPFNRefreshImmersiveColorPolicyState _RefreshImmersiveColorPolicyState = nullptr;
+LPFNSetWindowCompositionAttribute _SetWindowCompositionAttribute = nullptr;
+LPFNDwmSetWindowAttribute _DwmSetWindowAttribute = nullptr;
 
 BOOL g_bDarkMode = FALSE;
 
@@ -65,7 +64,7 @@ VOID teSetAccentColor(HWND hwnd)
 		if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\Windows\\DWM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
 			DWORD clAccent;
 			DWORD dwSize = sizeof(DWORD);
-			if (RegQueryValueExA(hKey, "AccentColor", NULL, NULL, (LPBYTE)&clAccent, &dwSize) == ERROR_SUCCESS) {
+			if (RegQueryValueExA(hKey, "AccentColor", nullptr, nullptr, (LPBYTE)&clAccent, &dwSize) == ERROR_SUCCESS) {
 				ACCENTPOLICY accent = {
 					4, //ACCENT_ENABLE_ACRYLICBLURBEHIND
 					0x1e0, //DrawLeftBorder or DrawTopBorder or DrawRightBorder or DrawBottomBorder
@@ -118,7 +117,7 @@ VOID teSetTreeTheme(HWND hwnd, COLORREF cl)
 	if (_AllowDarkModeForWindow) {
 		BOOL bDarkMode = teIsDarkColor(cl);
 		_AllowDarkModeForWindow(hwnd, bDarkMode);
-		SetWindowTheme(hwnd, bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+		SetWindowTheme(hwnd, bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 	}
 }
 
@@ -134,14 +133,14 @@ VOID teFixGroup(LPNMLVCUSTOMDRAW lplvcd, COLORREF clrBk)
 			BYTE g0 = GetGValue(clrBk);
 			BYTE b0 = GetBValue(clrBk);
 			BITMAPINFO bmi;
-			RGBQUAD *pcl = NULL;
+			RGBQUAD *pcl = nullptr;
 			::ZeroMemory(&bmi.bmiHeader, sizeof(BITMAPINFOHEADER));
 			bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 			bmi.bmiHeader.biWidth = w;
 			bmi.bmiHeader.biHeight = -(LONG)h;
 			bmi.bmiHeader.biPlanes = 1;
 			bmi.bmiHeader.biBitCount = 32;
-			HBITMAP hBM = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, (void **)&pcl, NULL, 0);
+			HBITMAP hBM = CreateDIBSection(nullptr, &bmi, DIB_RGB_COLORS, (void **)&pcl, nullptr, 0);
 			HDC hmdc = CreateCompatibleDC(lplvcd->nmcd.hdc);
 			HGDIOBJ hOld = SelectObject(hmdc, hBM);
 			BitBlt(hmdc, 0, 0, w, h, lplvcd->nmcd.hdc, lplvcd->rcText.left, lplvcd->rcText.top, NOTSRCCOPY);
@@ -293,15 +292,15 @@ LRESULT CALLBACK TabCtrlProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, 
 
 VOID FixChildren(HWND hwnd)
 {
-	HWND hwnd1 = NULL;
-	while (hwnd1 = ::FindWindowEx(hwnd, hwnd1, NULL, NULL)) {
+	HWND hwnd1 = nullptr;
+	while (hwnd1 = ::FindWindowEx(hwnd, hwnd1, nullptr, nullptr)) {
 		if (::GetWindowTheme(hwnd)) {
 			break;
 		}
 		CHAR pszClassA[MAX_CLASS_NAME];
 		::GetClassNameA(hwnd1, pszClassA, MAX_CLASS_NAME);
 		if (::PathMatchSpecA(pszClassA, WC_BUTTONA)) {
-			::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+			::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 			DWORD dwStyle = GetWindowLong(hwnd1, GWL_STYLE);
 			DWORD dwButton = dwStyle & BS_TYPEMASK;
 			if (dwButton > BS_DEFPUSHBUTTON && dwButton < BS_OWNERDRAW) {
@@ -309,22 +308,22 @@ VOID FixChildren(HWND hwnd)
 					if (!(dwStyle & BS_BITMAP)) {
 						int nLen = ::GetWindowTextLength(hwnd1);
 						if (nLen) {
-							BSTR bs = ::SysAllocStringLen(NULL, nLen + 1);
-							::GetWindowText(hwnd1, bs, nLen + 1);
+							std::wstring text(nLen + 1, L'\0');;
+							::GetWindowText(hwnd1, &text[0], nLen + 1);
 							HDC hdc = ::GetDC(hwnd);
 							if (hdc) {
 								HGDIOBJ hFont = (HGDIOBJ)::SendMessage(hwnd1, WM_GETFONT, 0, 0);
 								HGDIOBJ hFontOld = ::SelectObject(hdc, hFont);
 								RECT rc;
 								::GetClientRect(hwnd1, &rc);
-								::DrawText(hdc, bs, nLen + 1, &rc, DT_HIDEPREFIX | DT_CALCRECT);
+								::DrawText(hdc, text.c_str(), nLen + 1, &rc, DT_HIDEPREFIX | DT_CALCRECT);
 								HBITMAP hBM = ::CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
 								HDC hmdc = ::CreateCompatibleDC(hdc);
 								HGDIOBJ hOld = ::SelectObject(hmdc, hBM);
 								HGDIOBJ hFontOld2 = ::SelectObject(hmdc, hFont);
 								::SetTextColor(hmdc, TECL_DARKTEXT);
 								::SetBkColor(hmdc, TECL_DARKBG);
-								::DrawText(hmdc, bs, nLen + 1, &rc, DT_HIDEPREFIX);
+								::DrawText(hmdc, text.c_str(), nLen + 1, &rc, DT_HIDEPREFIX);
 								::SelectObject(hmdc, hFontOld2);
 								::SelectObject(hmdc, hOld);
 								::DeleteDC(hmdc);
@@ -332,7 +331,6 @@ VOID FixChildren(HWND hwnd)
 								::ReleaseDC(hwnd1, hdc);
 								::SetWindowLong(hwnd1, GWL_STYLE, (dwStyle | BS_BITMAP));
 								::SendMessage(hwnd1, BM_SETIMAGE, IMAGE_BITMAP, (LPARAM)hBM);
-								::SysFreeString(bs);
 								g_umDlgProc.try_emplace(hwnd1, hwnd);
 							}
 						}
@@ -351,31 +349,31 @@ VOID FixChildren(HWND hwnd)
 			}
 		} else if (::PathMatchSpecA(pszClassA, WC_EDITA)) {
 			if (GetWindowLong(hwnd1, GWL_STYLE) & ES_MULTILINE) {
-				::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+				::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 			} else {
-				::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_cfd" : L"cfd", NULL);
+				::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_cfd" : L"cfd", nullptr);
 			}
 		} else if (::PathMatchSpecA(pszClassA, WC_COMBOBOXA)) {
-			::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_cfd" : L"cfd", NULL);
+			::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_cfd" : L"cfd", nullptr);
 		} else if (::PathMatchSpecA(pszClassA, WC_SCROLLBARA)) {
-			::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+			::SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 		} else if (::PathMatchSpecA(pszClassA, WC_TREEVIEWA)) {
-			SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+			SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 			TreeView_SetTextColor(hwnd1, g_bDarkMode ? TECL_DARKTEXT : GetSysColor(COLOR_WINDOWTEXT));
 			TreeView_SetBkColor(hwnd1, g_bDarkMode ? TECL_DARKBG : GetSysColor(COLOR_WINDOW));
 		} else if (::PathMatchSpecA(pszClassA, WC_LISTVIEWA)) {
 			ListView_SetExtendedListViewStyle(hwnd1, ListView_GetExtendedListViewStyle(hwnd1) | LVS_EX_DOUBLEBUFFER);
 			if (_AllowDarkModeForWindow) {
 				_AllowDarkModeForWindow(hwnd1, g_bDarkMode);
-				SetWindowTheme(hwnd1, L"explorer", NULL);
+				SetWindowTheme(hwnd1, L"explorer", nullptr);
 			}
-//			SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_itemsview" : L"explorer", NULL);
+//			SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_itemsview" : L"explorer", nullptr);
 			ListView_SetTextColor(hwnd1, g_bDarkMode ? TECL_DARKTEXT : GetSysColor(COLOR_WINDOWTEXT));
 			ListView_SetTextBkColor(hwnd1, g_bDarkMode ? TECL_DARKBG : GetSysColor(COLOR_WINDOW));
 			ListView_SetBkColor(hwnd1, g_bDarkMode ? TECL_DARKBG : GetSysColor(COLOR_WINDOW));
 			HWND hHeader = ListView_GetHeader(hwnd1);
 			if (hHeader) {
-				SetWindowTheme(hHeader, g_bDarkMode ? L"darkmode_itemsview" : L"explorer", NULL);
+				SetWindowTheme(hHeader, g_bDarkMode ? L"darkmode_itemsview" : L"explorer", nullptr);
 			}
 			if (g_bDarkMode) {
 				auto itr = g_umDlgProc.find(hwnd1);
@@ -398,7 +396,7 @@ VOID FixChildren(HWND hwnd)
 			}
 		}
 		/*if (lstrcmpiA(pszClassA, "DirectUIHWND") == 0) {
-		SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+		SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 		if (_AllowDarkModeForWindow) {
 		_AllowDarkModeForWindow(hwnd1, g_bDarkMode);
 		}
@@ -429,7 +427,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 			teGetDarkMode();
 			teSetDarkMode(hwnd);
 			FixChildren(hwnd);
-			::RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
+			::RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
 			break;
 		case WM_NCPAINT:
 			FixChildren(hwnd);
@@ -438,7 +436,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 			if (_AllowDarkModeForWindow) {
 				auto itr = g_umDlgProc.find((HWND)lParam);
 				if (itr == g_umDlgProc.end()) {
-					SetWindowTheme((HWND)lParam, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+					SetWindowTheme((HWND)lParam, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 					g_umDlgProc[(HWND)lParam] = hwnd;
 				}
 			}
@@ -447,9 +445,9 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 			if (wParam == IDOK && g_pofn) {
 				IShellBrowser *pSB = (IShellBrowser *)SendMessage(hwnd, WM_USER + 7, 0, 0);
 				if (pSB) {
-					LPITEMIDLIST pidlParent = NULL;
+					LPITEMIDLIST pidlParent = nullptr;
 /*					if (teGetIDListFromObject(pSB, &pidlParent)) {
-						LPITEMIDLIST pidlChild = NULL;
+						LPITEMIDLIST pidlChild = nullptr;
 						IShellView *pSV;
 						if SUCCEEDED(pSB->QueryActiveShellView(&pSV)) {
 							IFolderView *pFV;
@@ -508,7 +506,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 			case WM_PAINT:
 				BOOL bHandle;
 				bHandle = TRUE;
-				for (HWND hwndChild = NULL; hwndChild = FindWindowEx(hwnd, hwndChild, NULL, NULL);) {
+				for (HWND hwndChild = nullptr; hwndChild = FindWindowEx(hwnd, hwndChild, nullptr, nullptr);) {
 					GetClassNameA(hwndChild, pszClassA, MAX_CLASS_NAME);
 					if (!PathMatchSpecA(pszClassA, WC_STATICA ";" WC_BUTTONA ";" WC_COMBOBOXA)) {
 						bHandle = FALSE;
@@ -531,7 +529,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 					int w = pdis->rcItem.right - pdis->rcItem.left;
 					int h = pdis->rcItem.bottom - pdis->rcItem.top;
 					BITMAPINFO bmi;
-					COLORREF *pcl = NULL, *pcl2 = NULL;
+					COLORREF *pcl = nullptr, *pcl2 = nullptr;
 					::ZeroMemory(&bmi.bmiHeader, sizeof(BITMAPINFOHEADER));
 					bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 					bmi.bmiHeader.biWidth = w;
@@ -539,7 +537,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 					bmi.bmiHeader.biPlanes = 1;
 					bmi.bmiHeader.biBitCount = 32;
 					HGDIOBJ hFont = (HGDIOBJ)::SendMessage(pdis->hwndItem, WM_GETFONT, 0, 0);
-					HBITMAP hBM = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, (void **)&pcl, NULL, 0);
+					HBITMAP hBM = CreateDIBSection(nullptr, &bmi, DIB_RGB_COLORS, (void **)&pcl, nullptr, 0);
 					HDC hmdc = CreateCompatibleDC(pdis->hDC);
 					HGDIOBJ hOld = SelectObject(hmdc, hBM);
 					HDC hdc1 = pdis->hDC;
@@ -558,7 +556,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 					rgbBlue  =  0x00FF0000 = rgbRed */
 					DWORD cl0 = *pcl;
 					if (299 * GetBValue(cl0) + 587 * GetGValue(cl0) + 114 * GetRValue(cl0) >= 127500) {
-						HBITMAP hBM2 = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, (void **)&pcl2, NULL, 0);
+						HBITMAP hBM2 = CreateDIBSection(nullptr, &bmi, DIB_RGB_COLORS, (void **)&pcl2, nullptr, 0);
 						HDC hmdc2 = CreateCompatibleDC(pdis->hDC);
 						HGDIOBJ hOld2 = SelectObject(hmdc2, hBM2);
 						pdis->hDC = hmdc2;
@@ -658,7 +656,7 @@ LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam)
 			SetWindowSubclass(hwnd, TEDlgProc, (UINT_PTR)TEDlgProc, 0);
 		} else if (::PathMatchSpecA(pszClassA, TOOLTIPS_CLASSA)) {
 			SetWindowSubclass(hwnd, TETTProc, (UINT_PTR)TETTProc, 0);
-			SetWindowTheme(hwnd, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+			SetWindowTheme(hwnd, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
 			g_umDlgProc.try_emplace(hwnd, hwnd);
 		}
 	} else if (nCode == HCBT_DESTROYWND) {

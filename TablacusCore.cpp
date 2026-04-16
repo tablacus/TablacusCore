@@ -11,7 +11,7 @@ HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 
-LPFNRegenerateUserEnvironment _RegenerateUserEnvironment = NULL;
+LPFNRegenerateUserEnvironment _RegenerateUserEnvironment = nullptr;
 
 
 extern HBRUSH	g_hbrDarkBackground;
@@ -20,12 +20,11 @@ extern int g_nException;
 extern std::unordered_map<HWND, HWND> g_umDlgProc;
 extern LPCWSTR g_strException;
 
-HWND	g_hwndMain;
 JSContext* g_ctx;
 std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 
 #ifdef _WINDLL
-HINSTANCE g_hinstDll = NULL;
+HINSTANCE g_hinstDll = nullptr;
 #endif
 
 // Forward declarations of functions included in this code module:
@@ -40,7 +39,7 @@ JSModuleDef* js_module_loader(JSContext* ctx,
     if (strcmp(module_name, "api") == 0) {
         return js_init_module_api(ctx, module_name);
     }
-    return NULL;
+    return nullptr;
 }
 
 #ifdef _WINDLL
@@ -51,7 +50,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDll, DWORD dwReason, LPVOID lpReserved)
     case DLL_PROCESS_ATTACH:
         g_hinstDll = hinstDll;
     case DLL_THREAD_ATTACH:
-        g_umCBTHook.try_emplace(dwThreadId, SetWindowsHookEx(WH_CBT, (HOOKPROC)CBTProc, NULL, dwThreadId));
+        g_umCBTHook.try_emplace(dwThreadId, SetWindowsHookEx(WH_CBT, (HOOKPROC)CBTProc, nullptr, dwThreadId));
         break;
     case DLL_THREAD_DETACH:
     case DLL_PROCESS_DETACH:
@@ -113,11 +112,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     g_ctx = JS_NewContext(rt);
 
     // Register the module loader
-    JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
+    JS_SetModuleLoaderFunc(rt, nullptr, js_module_loader, nullptr);
 
     // Load scripts\main.js
 	wchar_t outPath[MAX_PATHEX];
-   :: GetModuleFileName(NULL, outPath, MAX_PATHEX);
+   :: GetModuleFileName(nullptr, outPath, MAX_PATHEX);
     wchar_t* p = wcsrchr(outPath, L'\\');
     if (p) {
         *(p + 1) = 0;
@@ -210,24 +209,11 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     DWORD dwThreadId = GetCurrentThreadId();
     auto itr = g_umCBTHook.find(dwThreadId);
     if (itr == g_umCBTHook.end()) {
-        g_umCBTHook[dwThreadId] = SetWindowsHookEx(WH_CBT, (HOOKPROC)CBTProc, NULL, dwThreadId);
+        g_umCBTHook[dwThreadId] = SetWindowsHookEx(WH_CBT, (HOOKPROC)CBTProc, nullptr, dwThreadId);
     }
 #endif
     teInitDarkMode();
    hInst = hInstance; // Store instance handle in our global variable
-
-   g_hwndMain = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
-
-   if (!g_hwndMain) {
-      return FALSE;
-   }
-
-   teGetDarkMode();
-   teSetDarkMode(g_hwndMain);
-   ShowWindow(g_hwndMain, nCmdShow);
-   UpdateWindow(g_hwndMain);
-
    return TRUE;
 }
 
@@ -289,7 +275,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         for (auto itr = g_umDlgProc.begin(); itr != g_umDlgProc.end(); ++itr) {
             GetClassNameA(itr->second, pszClassA, MAX_CLASS_NAME);
             if (::PathMatchSpecA(pszClassA, TOOLTIPS_CLASSA)) {
-                SetWindowTheme(itr->second, g_bDarkMode ? L"darkmode_explorer" : L"explorer", NULL);
+                SetWindowTheme(itr->second, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
             }
         }
         if (_RegenerateUserEnvironment) {
@@ -309,6 +295,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
         }
     case WM_DESTROY:
+        {
+            WindowData* data = GetWindowData(hWnd);
+            if (data) {
+                // free event handlers
+                for (auto& [k, vec] : data->events.map) {
+                    for (auto& fn : vec) {
+                        JS_FreeValue(data->ctx, fn);
+                    }
+                }
+
+                JS_FreeValue(data->ctx, data->jsThis);
+
+                js_free(data->ctx, data);
+                SetWindowLongPtr(hWnd, GWLP_USERDATA, 0);
+            }
+        }
         PostQuitMessage(0);
         break;
     default:

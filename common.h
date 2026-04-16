@@ -38,6 +38,26 @@ std::wstring Utf8ToWide(const char* utf8);
 std::string  WideToUtf8(const wchar_t* wide);
 std::string LoadFile(const wchar_t* path);
 
+VOID FreeBSTR(BSTR* bstr);
+
+struct WStrNullable {
+    std::wstring storage;
+    LPCWSTR ptr = nullptr;
+};
+
+struct EventMap {
+    std::unordered_map<std::string, std::vector<JSValue>> map;
+};
+
+struct WindowData {
+    EventMap events;
+    JSContext* ctx;
+    JSValue jsThis;
+};
+
+bool JS_ToWStrNullable(JSContext* ctx, JSValueConst val, WStrNullable& out);
+JSValue JS_FromPoint(JSContext* ctx, const POINT& pt);
+
 VOID SafeRelease(PVOID ppObj);
 VOID teCoTaskMemFree(LPVOID pv);
 BOOL teIsClan(HWND hwndRoot, HWND hwnd);
@@ -47,6 +67,9 @@ std::wstring tcPathAppend(LPCWSTR pszPath, LPCWSTR pszFile);
 VOID teSysFreeString(BSTR* pbs);
 BSTR teSysAllocStringLen(const OLECHAR* strIn, UINT uSize);
 int teStrCmpIWA(LPCWSTR lpStringW, LPCSTR lpStringA);
+WindowData* GetWindowData(HWND hwnd);
+uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr);
+
 
 #if !defined(_WINDLL) && !defined(_DEBUG)
 #pragma comment(linker, "/entry:\"wWinMain\"")
