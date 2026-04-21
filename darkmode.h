@@ -9,8 +9,10 @@
 #include <shlwapi.h>
 #include <shobjidl.h>
 #include <shlobj_core.h>
-
+#pragma warning(push)
+#pragma warning(disable: 4244)
 #include "quickjs.h"
+#pragma warning(pop)
 #include "common.h"
 
 

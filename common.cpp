@@ -255,4 +255,75 @@ uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
     return len;
 }
 
+BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
+{
+    auto* data = GetWindowData(hwnd);
+    if (!data) {
+        return FALSE;
+    }
+    auto it = data->events.map.find(name);
+    if (it == data->events.map.end()) {
+        return FALSE;
+    }
+    for (auto& fn : it->second) {
+        JSValue result = JS_Call(data->ctx, fn, data->jsThis, 1, &e);
+		if (!JS_IsUndefined(result)) {
+            return !JS_ToBool(data->ctx, result);
+        }
+    }
+    return FALSE;
+}
+
+JSValue CreateKeyEvent(JSContext* ctx, WPARAM vk)
+{
+    JSValue e = JS_NewObject(ctx);
+
+    // keyCode
+    JS_SetPropertyStr(ctx, e, "keyCode", JS_NewInt32(ctx, (int)vk));
+
+    // key
+    wchar_t buf[8];
+    GetKeyNameTextW((LONG)(MapVirtualKeyW(vk, 0) << 16), buf, 8);
+    JS_SetPropertyStr(ctx, e, "key", JS_NewString(ctx, WideToUtf8(buf).c_str()));
+    return e;
+}
+
+BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk)
+{
+    auto* data = GetWindowData(hwnd);
+    if (!data) {
+        return FALSE;
+    }
+    JSValue e = CreateKeyEvent(data->ctx, vk);
+   return FireEvent(hwnd, name, e);
+}
+
+BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam)
+{
+    auto* data = GetWindowData(hwnd);
+    if (!data) {
+        return FALSE;
+    }
+
+    JSValue e = JS_NewObject(data->ctx);
+
+    JS_SetPropertyStr(data->ctx, e, "button", JS_NewInt32(data->ctx, button));
+
+    // buttons (Win32 → JS)
+    int buttons = 0;
+    if (wParam & MK_LBUTTON) {
+        buttons |= 1;
+    }
+    if (wParam & MK_RBUTTON) {
+        buttons |= 2;
+    }
+    if (wParam & MK_MBUTTON) {
+        buttons |= 4;
+    }
+    JS_SetPropertyStr(data->ctx, e, "buttons", JS_NewInt32(data->ctx, buttons));
+    JS_SetPropertyStr(data->ctx, e, "clientX", JS_NewInt32(data->ctx, LOWORD(lParam)));
+    JS_SetPropertyStr(data->ctx, e, "clientY", JS_NewInt32(data->ctx, HIWORD(lParam)));
+	return FireEvent(hwnd, name, e);
+}
+
 #endif

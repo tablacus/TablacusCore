@@ -33,6 +33,7 @@ int teGetModuleFileName(HMODULE hModule, std::wstring& out)
     out.clear();
     return 0;
 }
+
 int GetConst(JSContext* ctx, JSValueConst api, const char* name, int def = 0)
 {
     JSValue val = JS_GetPropertyStr(ctx, api, name);
@@ -50,6 +51,32 @@ int GetConst(JSContext* ctx, JSValueConst api, const char* name, int def = 0)
     // fallback: 数値文字列
     return atoi(name);
 }
+
+// =====  get int property =====
+int JS_GetPropertyInt(JSContext* ctx, JSValue opts, const char* name, int def) {
+    JSValue v = JS_GetPropertyStr(ctx, opts, name);
+    int val = def;
+    if (!JS_IsUndefined(v)) {
+        JS_ToInt32(ctx, &val, v);
+    }
+    JS_FreeValue(ctx, v);
+    return val;
+};
+
+// =====  get int64 property =====
+int64_t JS_GetPropertyInt64(JSContext* ctx, JSValue opts, const char* name, int64_t def) {
+    JSValue v = JS_GetPropertyStr(ctx, opts, name);
+    int64_t val = def;
+    if (!JS_IsUndefined(v)) {
+        if (JS_IsBigInt(v)) {
+            JS_ToBigInt64(ctx, &val, v);
+        } else {
+            JS_ToInt64(ctx, &val, v);
+        }
+    }
+    JS_FreeValue(ctx, v);
+    return val;
+};
 
 JSValue js_CreateWindow(JSContext* ctx,
     JSValueConst this_val,
@@ -78,40 +105,18 @@ JSValue js_CreateWindow(JSContext* ctx,
     std::wstring title = L"Window";
     std::wstring className = L"STATIC";
 
-    // ===== Helper: get int property =====
-    auto getInt = [&](const char* name, int def) {
-        JSValue v = JS_GetPropertyStr(ctx, opts, name);
-        int val = def;
-        if (!JS_IsUndefined(v)) {
-            JS_ToInt32(ctx, &val, v);
-        }
-        JS_FreeValue(ctx, v);
-        return val;
-    };
-
-    // ===== Helper: get int64 property =====
-    auto getInt64 = [&](const char* name, int64_t def) {
-        JSValue v = JS_GetPropertyStr(ctx, opts, name);
-        int64_t val = def;
-        if (!JS_IsUndefined(v)) {
-            JS_ToInt64(ctx, &val, v);
-        }
-        JS_FreeValue(ctx, v);
-        return val;
-    };
-
     // ===== Read options =====
-    style = getInt("style", style);
-    exStyle = getInt("exStyle", exStyle);
+    style = JS_GetPropertyInt(ctx, opts, "style", style);
+    exStyle = JS_GetPropertyInt(ctx, opts, "exStyle", exStyle);
 
-    x = getInt("x", x);
-    y = getInt("y", y);
-    width = getInt("width", width);
-    height = getInt("height", height);
+    x = JS_GetPropertyInt(ctx, opts, "x", x);
+    y = JS_GetPropertyInt(ctx, opts, "y", y);
+    width = JS_GetPropertyInt(ctx, opts, "width", width);
+    height = JS_GetPropertyInt(ctx, opts, "height", height);
 
-    parent = (HWND)getInt64("parent", 0);
-    menu = (HMENU)getInt64("menu", 0);
-    instance = (HINSTANCE)getInt64("instance", (int64_t)instance);
+    parent = (HWND)JS_GetPropertyInt64(ctx, opts, "parent", 0);
+    menu = (HMENU)JS_GetPropertyInt64(ctx, opts, "menu", 0);
+    instance = (HINSTANCE)JS_GetPropertyInt64(ctx, opts, "instance", (int64_t)instance);
 
     // Read title string
     {
@@ -167,7 +172,7 @@ JSValue js_CreateWindow(JSContext* ctx,
         JS_NewBigInt64(ctx, (int64_t)hwnd));
 
     // ===== Allocate WindowData =====
-    WindowData* data = (WindowData*)js_malloc(ctx, sizeof(WindowData));
+    WindowData* data = new WindowData();
     data->ctx = ctx;
     data->jsThis = JS_DupValue(ctx, obj);
     
@@ -222,23 +227,56 @@ JSValue js_CreateWindow(JSContext* ctx,
             [](JSContext* ctx, JSValueConst this_val,
                 int argc, JSValueConst* argv) -> JSValue {
 
-        JSValue v = JS_GetPropertyStr(ctx, this_val, "hwnd");
-
-        int64_t hwnd;
-        if (JS_IsBigInt(v)) {
-            JS_ToBigInt64(ctx, &hwnd, v);
-        }
-        else {
-            JS_ToInt64(ctx, &hwnd, v);
-        }
-        JS_FreeValue(ctx, v);
-
-        ShowWindow((HWND)hwnd, SW_SHOW);
-        UpdateWindow((HWND)hwnd);
+        HWND hwnd = (HWND)JS_GetPropertyInt64(ctx, this_val, "hwnd", NULL);
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
 
         return JS_UNDEFINED;
     },
             "show", 0)
+    );
+
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        JS_NewAtom(ctx, "title"),
+        JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
+            int argc, JSValueConst* argv) -> JSValue {
+                HWND hwnd = (HWND)JS_GetPropertyInt64(ctx, this_val, "hwnd", 0);
+
+                if (!hwnd) {
+                    return JS_ThrowInternalError(ctx, "Invalid hwnd");
+                }
+
+                int len = GetWindowTextLengthW(hwnd) + 1;
+                std::wstring text(len, L'\0');
+
+                GetWindowTextW(hwnd, &text[0], len + 1);
+
+                return JS_NewString(ctx, WideToUtf8(text.c_str()).c_str());
+            }, "get title", 0
+        ),
+        JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
+            int argc, JSValueConst* argv) -> JSValue {
+                HWND hwnd = (HWND)JS_GetPropertyInt64(ctx, this_val, "hwnd", NULL);
+
+                if (!hwnd) {
+                    return JS_ThrowInternalError(ctx, "Invalid hwnd");
+                }
+
+                if (JS_IsString(argv[0])) {
+                    WStrNullable w;
+                    JS_ToWStrNullable(ctx, argv[0], w);
+
+                    if (w.ptr) {
+                        SetWindowTextW(hwnd, w.ptr);
+                    }
+                }
+
+                return JS_UNDEFINED;   
+            }, "set title", 1
+        ),
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
     );
 
     return obj;

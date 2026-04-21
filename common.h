@@ -9,7 +9,10 @@
 #include <shlwapi.h>
 #include <shlobj_core.h>
 #include <pathcch.h>
+#pragma warning(push)
+#pragma warning(disable: 4244)
 #include "quickjs.h"
+#pragma warning(pop)
 #include "quickjs-libc.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -53,6 +56,7 @@ struct WindowData {
     EventMap events;
     JSContext* ctx;
     JSValue jsThis;
+    BOOL defaultPrevented;
 };
 
 bool JS_ToWStrNullable(JSContext* ctx, JSValueConst val, WStrNullable& out);
@@ -69,7 +73,9 @@ BSTR teSysAllocStringLen(const OLECHAR* strIn, UINT uSize);
 int teStrCmpIWA(LPCWSTR lpStringW, LPCSTR lpStringA);
 WindowData* GetWindowData(HWND hwnd);
 uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr);
-
+BOOL FireEvent(HWND hwnd, const char* name, JSValue e);
+BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk);
+BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam);
 
 #if !defined(_WINDLL) && !defined(_DEBUG)
 #pragma comment(linker, "/entry:\"wWinMain\"")

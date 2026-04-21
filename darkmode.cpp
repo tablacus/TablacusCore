@@ -484,7 +484,7 @@ LRESULT CALLBACK TEDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UI
 			break;
 		}
 		if (g_bDarkMode) {
-			HWND hwnd1;
+			//HWND hwnd1;
 			CHAR pszClassA[MAX_CLASS_NAME];
 			switch (msg) {
 			case WM_CTLCOLORBTN:

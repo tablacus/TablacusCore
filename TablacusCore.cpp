@@ -227,7 +227,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //  WM_DESTROY  - post a quit message and return
 //
 //
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
@@ -238,20 +238,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             switch (wmId)
             {
             case IDM_ABOUT:
-                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, About);
                 break;
             case IDM_EXIT:
-                DestroyWindow(hWnd);
+                DestroyWindow(hwnd);
                 break;
             default:
-                return DefWindowProc(hWnd, message, wParam, lParam);
+                return DefWindowProc(hwnd, message, wParam, lParam);
             }
         }
         break;
     case WM_ERASEBKGND:
         if (g_bDarkMode) {
             RECT rc;
-            GetClientRect(hWnd, &rc);
+            GetClientRect(hwnd, &rc);
             FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
             return 1;
         }
@@ -259,18 +259,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_PAINT:
         {
             PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
+            HDC hdc = BeginPaint(hwnd, &ps);
             // TODO: Add any drawing code that uses hdc here...
-            EndPaint(hWnd, &ps);
+            EndPaint(hwnd, &ps);
         }
         break;
+    case WM_KEYDOWN:
+        if (FireKeyEvent(hwnd, "keydown", wParam)) {
+            return 0;
+        }
+        break;
+    case WM_KEYUP:
+        if (FireKeyEvent(hwnd, "keyup", wParam)) {
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
+			return 0;
+        }
+        break;
+    case WM_RBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 2, wParam, lParam)) {
+			return 0;
+        }
+        break;
+    case WM_MBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 1, wParam, lParam)) {
+			return 0;
+        }
+        break;
+
     case WM_SETTINGCHANGE:
 /*        SafeRelease(&g_pqp);
         if (g_pSW) {
             teRegister();
         }*/
         teGetDarkMode();
-        teSetDarkMode(hWnd);
+        teSetDarkMode(hwnd);
         CHAR pszClassA[MAX_CLASS_NAME];
         for (auto itr = g_umDlgProc.begin(); itr != g_umDlgProc.end(); ++itr) {
             GetClassNameA(itr->second, pszClassA, MAX_CLASS_NAME);
@@ -294,27 +320,32 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 #endif
             }
         }
-    case WM_DESTROY:
-        {
-            WindowData* data = GetWindowData(hWnd);
-            if (data) {
-                // free event handlers
-                for (auto& [k, vec] : data->events.map) {
-                    for (auto& fn : vec) {
-                        JS_FreeValue(data->ctx, fn);
-                    }
+    case WM_NCDESTROY:
+    {
+        auto* data = GetWindowData(hwnd);
+
+        if (data) {
+            // free event handlers
+            for (auto& [name, vec] : data->events.map) {
+                for (auto& fn : vec) {
+                    JS_FreeValue(data->ctx, fn);
                 }
-
-                JS_FreeValue(data->ctx, data->jsThis);
-
-                js_free(data->ctx, data);
-                SetWindowLongPtr(hWnd, GWLP_USERDATA, 0);
             }
+
+            // free JS object
+            JS_FreeValue(data->ctx, data->jsThis);
+
+            delete data;
+
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
         }
+        break;
+    }
+    case WM_DESTROY:
         PostQuitMessage(0);
         break;
     default:
-        return DefWindowProc(hWnd, message, wParam, lParam);
+        return DefWindowProc(hwnd, message, wParam, lParam);
     }
     return 0;
 }
@@ -338,4 +369,5 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     }
     return (INT_PTR)FALSE;
 }
+
 #endif
