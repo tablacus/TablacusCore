@@ -52,10 +52,11 @@ struct EventMap {
     std::unordered_map<std::string, std::vector<JSValue>> map;
 };
 
-struct WindowData {
+struct UIElement  {
     EventMap events;
     JSContext* ctx;
     JSValue jsThis;
+    HWND hwnd;
     BOOL defaultPrevented;
 };
 
@@ -71,11 +72,12 @@ std::wstring tcPathAppend(LPCWSTR pszPath, LPCWSTR pszFile);
 VOID teSysFreeString(BSTR* pbs);
 BSTR teSysAllocStringLen(const OLECHAR* strIn, UINT uSize);
 int teStrCmpIWA(LPCWSTR lpStringW, LPCSTR lpStringA);
-WindowData* GetWindowData(HWND hwnd);
+UIElement * GetUIElement (HWND hwnd);
 uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr);
-BOOL FireEvent(HWND hwnd, const char* name, JSValue e);
+BOOL FireEvent(JSContext* ctx,HWND hwnd, const char* name, JSValue e);
 BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk);
 BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam);
+LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 #if !defined(_WINDLL) && !defined(_DEBUG)
 #pragma comment(linker, "/entry:\"wWinMain\"")

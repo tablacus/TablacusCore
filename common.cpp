@@ -237,9 +237,9 @@ int teStrCmpIWA(LPCWSTR lpStringW, LPCSTR lpStringA) {
     return result;
 }
 
-WindowData* GetWindowData(HWND hwnd)
+UIElement * GetUIElement(HWND hwnd)
 {
-    return (WindowData*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    return (UIElement *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 }
 
 uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
@@ -257,18 +257,21 @@ uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
 
 BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
 {
-    auto* data = GetWindowData(hwnd);
-    if (!data) {
+    auto* el = GetUIElement(hwnd);
+    if (!el) {
         return FALSE;
     }
-    auto it = data->events.map.find(name);
-    if (it == data->events.map.end()) {
+    if (JS_IsObject(e)) {
+        JS_SetPropertyStr(el->ctx, e, "target", el->jsThis);
+    }
+    auto it = el->events.map.find(name);
+    if (it == el->events.map.end()) {
         return FALSE;
     }
     for (auto& fn : it->second) {
-        JSValue result = JS_Call(data->ctx, fn, data->jsThis, 1, &e);
+        JSValue result = JS_Call(el->ctx, fn, el->jsThis, 1, &e);
 		if (!JS_IsUndefined(result)) {
-            return !JS_ToBool(data->ctx, result);
+            return !JS_ToBool(el->ctx, result);
         }
     }
     return FALSE;
@@ -283,31 +286,31 @@ JSValue CreateKeyEvent(JSContext* ctx, WPARAM vk)
 
     // key
     wchar_t buf[8];
-    GetKeyNameTextW((LONG)(MapVirtualKeyW(vk, 0) << 16), buf, 8);
+    GetKeyNameTextW((LONG)(MapVirtualKeyW((UINT)vk, 0) << 16), buf, 8);
     JS_SetPropertyStr(ctx, e, "key", JS_NewString(ctx, WideToUtf8(buf).c_str()));
     return e;
 }
 
 BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk)
 {
-    auto* data = GetWindowData(hwnd);
-    if (!data) {
+    auto* el = GetUIElement(hwnd);
+    if (!el) {
         return FALSE;
     }
-    JSValue e = CreateKeyEvent(data->ctx, vk);
+    JSValue e = CreateKeyEvent(el->ctx, vk);
    return FireEvent(hwnd, name, e);
 }
 
 BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam)
 {
-    auto* data = GetWindowData(hwnd);
-    if (!data) {
+    auto* el = GetUIElement(hwnd);
+    if (!el) {
         return FALSE;
     }
 
-    JSValue e = JS_NewObject(data->ctx);
+    JSValue e = JS_NewObject(el->ctx);
 
-    JS_SetPropertyStr(data->ctx, e, "button", JS_NewInt32(data->ctx, button));
+    JS_SetPropertyStr(el->ctx, e, "button", JS_NewInt32(el->ctx, button));
 
     // buttons (Win32 → JS)
     int buttons = 0;
@@ -320,10 +323,104 @@ BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPAR
     if (wParam & MK_MBUTTON) {
         buttons |= 4;
     }
-    JS_SetPropertyStr(data->ctx, e, "buttons", JS_NewInt32(data->ctx, buttons));
-    JS_SetPropertyStr(data->ctx, e, "clientX", JS_NewInt32(data->ctx, LOWORD(lParam)));
-    JS_SetPropertyStr(data->ctx, e, "clientY", JS_NewInt32(data->ctx, HIWORD(lParam)));
+    if (wParam & MK_XBUTTON1) {
+        buttons |= 8;
+    }
+    if (wParam & MK_XBUTTON2) {
+        buttons |= 16;
+    }
+    JS_SetPropertyStr(el->ctx, e, "buttons", JS_NewInt32(el->ctx, buttons));
+    JS_SetPropertyStr(el->ctx, e, "clientX", JS_NewInt32(el->ctx, LOWORD(lParam)));
+    JS_SetPropertyStr(el->ctx, e, "clientY", JS_NewInt32(el->ctx, HIWORD(lParam)));
 	return FireEvent(hwnd, name, e);
 }
+
+void destroy_element(UIElement* el)
+{
+    if (el) {
+        // free event handlers
+        for (auto& [name, vec] : el->events.map) {
+            for (auto& fn : vec) {
+                JS_FreeValue(el->ctx, fn);
+            }
+        }
+
+        // free JS object
+        JS_FreeValue(el->ctx, el->jsThis);
+
+        delete el;
+    }
+}
+
+LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (FireKeyEvent(hwnd, "keydown", wParam)) {
+            return 0;
+        }
+        break;
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        if (FireKeyEvent(hwnd, "keyup", wParam)) {
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_RBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 2, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_MBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 1, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_XBUTTONDOWN:
+        {
+            WORD x = GET_XBUTTON_WPARAM(wParam);
+            if (FireMouseEvent(hwnd, "mousedown", (x == XBUTTON1) ? 3 : 4, wParam, lParam)) {
+                return 0;
+            }
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (FireMouseEvent(hwnd, "mouseup", 0, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_RBUTTONUP:
+        if (FireMouseEvent(hwnd, "mouseup", 2, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_MBUTTONUP:
+        if (FireMouseEvent(hwnd, "mouseup", 1, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_XBUTTONUP:
+        {
+            WORD x = GET_XBUTTON_WPARAM(wParam);
+            if (FireMouseEvent(hwnd, "mouseup", (x == XBUTTON1) ? 3 : 4, wParam, lParam)) {
+                return 0;
+            }
+        }
+        break;
+    case WM_NCDESTROY:
+        destroy_element(GetUIElement(hwnd));
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+        break;
+    }
+    return 1;
+}
+
 
 #endif

@@ -6,6 +6,7 @@
 #include "api.h"
 
 JSValue g_pMBText;
+JSClassID g_class_id;
 
 int teGetModuleFileName(HMODULE hModule, std::wstring& out)
 {
@@ -48,7 +49,6 @@ int GetConst(JSContext* ctx, JSValueConst api, const char* name, int def = 0)
 
     JS_FreeValue(ctx, val);
 
-    // fallback: 数値文字列
     return atoi(name);
 }
 
@@ -78,6 +78,227 @@ int64_t JS_GetPropertyInt64(JSContext* ctx, JSValue opts, const char* name, int6
     return val;
 };
 
+UIElement* get_element(JSContext* ctx, JSValueConst val)
+{
+    UIElement* el = (UIElement*)JS_GetOpaque(val, g_class_id);
+    if (!el) {
+        JS_ThrowTypeError(ctx, "invalid UIElement");
+        return nullptr;
+    }
+    return el;
+}
+
+LRESULT CALLBACK ControlProc(HWND hwnd, UINT msg,
+    WPARAM wParam, LPARAM lParam,
+    UINT_PTR, DWORD_PTR refData)
+{
+    if (CommonProc(hwnd, msg, wParam, lParam) == 0) {
+        return 0;
+    }
+
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
+{
+    // Store HWND in JS object
+    JS_SetPropertyStr(ctx, obj, "hwnd",
+        JS_NewBigInt64(ctx, (int64_t)hwnd));
+
+    // ===== Allocate UIElement  =====
+    UIElement* el = new UIElement();
+    el->hwnd = hwnd;
+    el->ctx = ctx;
+    el->jsThis = JS_DupValue(ctx, obj);
+    JS_SetOpaque(obj, el);
+    // Associate HWND with UIElement
+    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)el);
+
+    // ===== Parse listeners and store directly =====
+    JSValue listeners = JS_GetPropertyStr(ctx, opts, "listeners");
+
+    if (JS_IsObject(listeners)) {
+        JSPropertyEnum* props;
+        uint32_t len;
+
+        if (JS_GetOwnPropertyNames(ctx, &props, &len, listeners,
+            JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+
+            for (uint32_t i = 0; i < len; i++) {
+                const char* name = JS_AtomToCString(ctx, props[i].atom);
+                JSValue val = JS_GetProperty(ctx, listeners, props[i].atom);
+
+                // Get event handler list for this event type
+                auto& vec = el->events.map[name];
+
+                // Single function
+                if (JS_IsFunction(ctx, val)) {
+                    vec.push_back(JS_DupValue(el->ctx, val));
+                }
+                // Array of functions
+                else if (JS_IsArray(val)) {
+                    uint32_t alen = JS_GetArrayLength(ctx, val);
+
+                    for (uint32_t j = 0; j < alen; j++) {
+                        JSValue fn = JS_GetPropertyUint32(ctx, val, j);
+                        if (JS_IsFunction(ctx, fn)) {
+                            vec.push_back(JS_DupValue(ctx, fn));
+                        }
+                        JS_FreeValue(ctx, fn);
+                    }
+                }
+
+                JS_FreeCString(ctx, name);
+                JS_FreeValue(ctx, val);
+            }
+            js_free(ctx, props);
+        }
+    }
+    JS_FreeValue(ctx, listeners);
+
+    // ===== show(): display the window =====
+    JS_SetPropertyStr(ctx, obj, "show",
+        JS_NewCFunction(ctx,
+            [](JSContext* ctx, JSValueConst this_val,
+                int argc, JSValueConst* argv) -> JSValue {
+
+        UIElement* el = get_element(ctx, this_val);
+        if (!el) {
+            return JS_EXCEPTION;
+        }
+        ShowWindow(el->hwnd, SW_SHOW);
+        UpdateWindow(el->hwnd);
+        return JS_UNDEFINED;
+    },
+            "show", 0)
+    );
+
+    JSAtom atom = JS_NewAtom(ctx, "text");
+
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        atom,
+
+        JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
+            int argc, JSValueConst* argv) -> JSValue {
+
+        UIElement* el = get_element(ctx, this_val);
+        if (!el) return JS_EXCEPTION;
+
+        int len = GetWindowTextLengthW(el->hwnd);
+        std::wstring text(len + 1, L'\0');
+
+        GetWindowTextW(el->hwnd, text.data(), len + 1);
+
+        return JS_NewString(ctx, WideToUtf8(text.c_str()).c_str());
+    }, "get text", 0),
+
+        JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
+            int argc, JSValueConst* argv) -> JSValue {
+
+        UIElement* el = get_element(ctx, this_val);
+        if (!el) return JS_EXCEPTION;
+
+        if (argc > 0 && JS_IsString(argv[0])) {
+            WStrNullable w;
+            JS_ToWStrNullable(ctx, argv[0], w);
+
+            if (w.ptr) {
+                SetWindowTextW(el->hwnd, w.ptr);
+            }
+        }
+
+        return JS_UNDEFINED;
+    }, "set text", 1),
+
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+    );
+
+    JS_FreeAtom(ctx, atom);
+}
+
+std::wstring js_read_string(JSContext* ctx, JSValue &opts, LPCSTR name, LPCWSTR def)
+{
+    std::wstring str = def;
+    JSValue v = JS_GetPropertyStr(ctx, opts, name);
+    if (JS_IsString(v)) {
+        WStrNullable w;
+        JS_ToWStrNullable(ctx, v, w);
+        if (w.ptr) {
+            str = w.ptr;
+        }
+    }
+    JS_FreeValue(ctx, v);
+    return str;
+}
+
+
+JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
+    int argc, JSValueConst* argv)
+{
+    // Get parent element (window or container)
+    UIElement* parent = get_element(ctx, this_val);
+    if (!parent) {
+        return JS_EXCEPTION;
+    }
+    // Get element type (e.g. "BUTTON")
+    const char* type = JS_ToCString(ctx, argv[0]);
+    if (!type) {
+        return JS_EXCEPTION;
+    }
+    JSValue opts = argc >= 2 ? argv[1] : JS_UNDEFINED;
+
+    HWND hwnd = nullptr;
+    // ===== Default values =====
+    DWORD style = WS_OVERLAPPEDWINDOW;
+    DWORD exStyle = 0;
+    int x = CW_USEDEFAULT;
+    int y = CW_USEDEFAULT;
+    int width = 80;
+    int height = 20;
+    style = JS_GetPropertyInt(ctx, opts, "style", style);
+    exStyle = JS_GetPropertyInt(ctx, opts, "exStyle", exStyle);
+
+    x = JS_GetPropertyInt(ctx, opts, "x", x);
+    y = JS_GetPropertyInt(ctx, opts, "y", y);
+    width = JS_GetPropertyInt(ctx, opts, "width", width);
+    height = JS_GetPropertyInt(ctx, opts, "height", height);
+
+    // Read string
+    std::wstring text = js_read_string(ctx, opts, "text", L"");
+
+    // --- BUTTON creation ---
+    if (_stricmp(type, "BUTTON") == 0)
+    {
+        hwnd = CreateWindowExW(
+            0,
+            L"BUTTON",
+            text.c_str(),
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            x, y, width, height,      // default position/size
+            parent->hwnd,
+            nullptr,
+            GetModuleHandle(nullptr),
+            nullptr
+        );
+        FixChild(parent->hwnd, hwnd);
+    }
+    else {
+        JS_FreeCString(ctx, type);
+        return JS_EXCEPTION;
+    }
+
+    JS_FreeCString(ctx, type);
+
+    // Create JS object
+    JSValue obj = JS_NewObjectClass(ctx, g_class_id);
+    CommonSettings(hwnd, ctx, obj, opts);
+    // Subclass the control to intercept events
+    SetWindowSubclass(hwnd, ControlProc, 0, (DWORD_PTR)get_element(ctx, obj));
+    return obj;
+}
+
 JSValue js_CreateWindow(JSContext* ctx,
     JSValueConst this_val,
     int argc,
@@ -102,9 +323,6 @@ JSValue js_CreateWindow(JSContext* ctx,
     HMENU menu = nullptr;
     HINSTANCE instance = GetModuleHandle(nullptr);
 
-    std::wstring title = L"Window";
-    std::wstring className = L"STATIC";
-
     // ===== Read options =====
     style = JS_GetPropertyInt(ctx, opts, "style", style);
     exStyle = JS_GetPropertyInt(ctx, opts, "exStyle", exStyle);
@@ -119,35 +337,15 @@ JSValue js_CreateWindow(JSContext* ctx,
     instance = (HINSTANCE)JS_GetPropertyInt64(ctx, opts, "instance", (int64_t)instance);
 
     // Read title string
-    {
-        JSValue v = JS_GetPropertyStr(ctx, opts, "title");
-        if (JS_IsString(v)) {
-            WStrNullable w;
-            JS_ToWStrNullable(ctx, v, w);
-            if (w.ptr) {
-                title = w.ptr;
-            }
-        }
-        JS_FreeValue(ctx, v);
-    }
+    std::wstring text = js_read_string(ctx, opts, "text", L"Window");
     // Read class string
-    {
-        JSValue v = JS_GetPropertyStr(ctx, opts, "className");
-        if (JS_IsString(v)) {
-            WStrNullable w;
-            JS_ToWStrNullable(ctx, v, w);
-            if (w.ptr) {
-                className = w.ptr;
-            }
-        }
-        JS_FreeValue(ctx, v);
-    }
+    std::wstring className = js_read_string(ctx, opts, "className", L"STATIC");
 
     // ===== Create native window =====
     HWND hwnd = CreateWindowExW(
         exStyle,
         className.c_str(),
-        title.c_str(),
+        text.c_str(),
         style,
         x, y, width, height,
         parent,
@@ -165,118 +363,15 @@ JSValue js_CreateWindow(JSContext* ctx,
     teSetDarkMode(hwnd);
 
     // ===== Create JS object =====
-    JSValue obj = JS_NewObject(ctx);
+    JSValue obj = JS_NewObjectClass(ctx, g_class_id);
 
-    // Store HWND in JS object
-    JS_SetPropertyStr(ctx, obj, "hwnd",
-        JS_NewBigInt64(ctx, (int64_t)hwnd));
+    CommonSettings(hwnd, ctx, obj, opts);
 
-    // ===== Allocate WindowData =====
-    WindowData* data = new WindowData();
-    data->ctx = ctx;
-    data->jsThis = JS_DupValue(ctx, obj);
-    
-    // ===== Parse listeners and store directly =====
-    JSValue listeners = JS_GetPropertyStr(ctx, opts, "listeners");
-
-    if (JS_IsObject(listeners)) {
-        JSPropertyEnum* props;
-        uint32_t len;
-
-        if (JS_GetOwnPropertyNames(ctx, &props, &len, listeners,
-            JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
-
-            for (uint32_t i = 0; i < len; i++) {
-                const char* name = JS_AtomToCString(ctx, props[i].atom);
-                JSValue val = JS_GetProperty(ctx, listeners, props[i].atom);
-
-                // Get event handler list for this event type
-                auto& vec = data->events.map[name];
-
-                // Single function
-                if (JS_IsFunction(ctx, val)) {
-                    vec.push_back(JS_DupValue(ctx, val));
-                }
-                // Array of functions
-                else if (JS_IsArray(val)) {
-                    uint32_t alen = JS_GetArrayLength(ctx, val);
-
-                    for (uint32_t j = 0; j < alen; j++) {
-                        JSValue fn = JS_GetPropertyUint32(ctx, val, j);
-                        if (JS_IsFunction(ctx, fn)) {
-                            vec.push_back(JS_DupValue(ctx, fn));
-                        }
-                        JS_FreeValue(ctx, fn);
-                    }
-                }
-
-                JS_FreeCString(ctx, name);
-                JS_FreeValue(ctx, val);
-            }
-            js_free(ctx, props);
-        }
-    }
-    JS_FreeValue(ctx, listeners);
-
-    // ===== Bind HWND <-> WindowData =====
-    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)data);
-
-    // ===== show(): display the window =====
-    JS_SetPropertyStr(ctx, obj, "show",
-        JS_NewCFunction(ctx,
-            [](JSContext* ctx, JSValueConst this_val,
-                int argc, JSValueConst* argv) -> JSValue {
-
-        HWND hwnd = (HWND)JS_GetPropertyInt64(ctx, this_val, "hwnd", NULL);
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
-
-        return JS_UNDEFINED;
-    },
-            "show", 0)
-    );
-
-    JS_DefinePropertyGetSet(
+    JS_SetPropertyStr(
         ctx,
         obj,
-        JS_NewAtom(ctx, "title"),
-        JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
-            int argc, JSValueConst* argv) -> JSValue {
-                HWND hwnd = (HWND)JS_GetPropertyInt64(ctx, this_val, "hwnd", 0);
-
-                if (!hwnd) {
-                    return JS_ThrowInternalError(ctx, "Invalid hwnd");
-                }
-
-                int len = GetWindowTextLengthW(hwnd) + 1;
-                std::wstring text(len, L'\0');
-
-                GetWindowTextW(hwnd, &text[0], len + 1);
-
-                return JS_NewString(ctx, WideToUtf8(text.c_str()).c_str());
-            }, "get title", 0
-        ),
-        JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
-            int argc, JSValueConst* argv) -> JSValue {
-                HWND hwnd = (HWND)JS_GetPropertyInt64(ctx, this_val, "hwnd", NULL);
-
-                if (!hwnd) {
-                    return JS_ThrowInternalError(ctx, "Invalid hwnd");
-                }
-
-                if (JS_IsString(argv[0])) {
-                    WStrNullable w;
-                    JS_ToWStrNullable(ctx, argv[0], w);
-
-                    if (w.ptr) {
-                        SetWindowTextW(hwnd, w.ptr);
-                    }
-                }
-
-                return JS_UNDEFINED;   
-            }, "set title", 1
-        ),
-        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+        "createElement",
+        JS_NewCFunction(ctx, js_createElement, "createElement", 2)
     );
 
     return obj;
@@ -447,5 +542,6 @@ JSModuleDef* js_init_module_api(JSContext* ctx, const char* module_name)
 
     return m;
 }
+
 
 #endif

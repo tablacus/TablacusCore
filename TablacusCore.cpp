@@ -21,6 +21,11 @@ extern std::unordered_map<HWND, HWND> g_umDlgProc;
 extern LPCWSTR g_strException;
 
 JSContext* g_ctx;
+void destroy_element(UIElement* el);
+
+static void ui_element_finalizer(JSRuntime* rt, JSValueConst val) {
+}
+
 std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 
 #ifdef _WINDLL
@@ -110,6 +115,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     JSRuntime* rt = JS_NewRuntime();
     g_ctx = JS_NewContext(rt);
+    JS_NewClassID(rt, &g_class_id);
+    JSClassDef class_def{};
+    class_def.class_name = "UIElement";
+    class_def.finalizer = ui_element_finalizer;
+    JS_NewClass(rt, g_class_id, &class_def);
 
     // Register the module loader
     JS_SetModuleLoaderFunc(rt, nullptr, js_module_loader, nullptr);
@@ -143,6 +153,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     if (JS_IsException(val)) {
         JSValue exc = JS_GetException(g_ctx);
         const char* err = JS_ToCString(g_ctx, exc);
+		MessageBoxA(nullptr, err, "Error", MB_OK | MB_ICONERROR);
         JS_FreeCString(g_ctx, err);
         JS_FreeValue(g_ctx, exc);
     }
@@ -229,6 +240,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+	if (CommonProc(hwnd, message, wParam, lParam) == 0) {
+        return 0;
+    }
+
     switch (message)
     {
     case WM_COMMAND:
@@ -264,32 +279,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             EndPaint(hwnd, &ps);
         }
         break;
-    case WM_KEYDOWN:
-        if (FireKeyEvent(hwnd, "keydown", wParam)) {
-            return 0;
-        }
-        break;
-    case WM_KEYUP:
-        if (FireKeyEvent(hwnd, "keyup", wParam)) {
-            return 0;
-        }
-        break;
-    case WM_LBUTTONDOWN:
-        if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
-			return 0;
-        }
-        break;
-    case WM_RBUTTONDOWN:
-        if (FireMouseEvent(hwnd, "mousedown", 2, wParam, lParam)) {
-			return 0;
-        }
-        break;
-    case WM_MBUTTONDOWN:
-        if (FireMouseEvent(hwnd, "mousedown", 1, wParam, lParam)) {
-			return 0;
-        }
-        break;
-
     case WM_SETTINGCHANGE:
 /*        SafeRelease(&g_pqp);
         if (g_pSW) {
@@ -320,27 +309,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 #endif
             }
         }
-    case WM_NCDESTROY:
-    {
-        auto* data = GetWindowData(hwnd);
-
-        if (data) {
-            // free event handlers
-            for (auto& [name, vec] : data->events.map) {
-                for (auto& fn : vec) {
-                    JS_FreeValue(data->ctx, fn);
-                }
-            }
-
-            // free JS object
-            JS_FreeValue(data->ctx, data->jsThis);
-
-            delete data;
-
-            SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
-        }
-        break;
-    }
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
