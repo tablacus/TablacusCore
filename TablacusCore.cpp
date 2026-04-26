@@ -21,7 +21,6 @@ extern std::unordered_map<HWND, HWND> g_umDlgProc;
 extern LPCWSTR g_strException;
 
 JSContext* g_ctx;
-void destroy_element(UIElement* el);
 
 static void ui_element_finalizer(JSRuntime* rt, JSValueConst val) {
 }
@@ -240,8 +239,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-	if (CommonProc(hwnd, message, wParam, lParam) == 0) {
-        return 0;
+	LRESULT lResult = CommonProc(hwnd, message, wParam, lParam);
+    if (lResult != 1) {
+        return lResult;
     }
 
     switch (message)
@@ -261,22 +261,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             default:
                 return DefWindowProc(hwnd, message, wParam, lParam);
             }
-        }
-        break;
-    case WM_ERASEBKGND:
-        if (g_bDarkMode) {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
-            return 1;
-        }
-        break;
-    case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-            // TODO: Add any drawing code that uses hdc here...
-            EndPaint(hwnd, &ps);
         }
         break;
     case WM_SETTINGCHANGE:

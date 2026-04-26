@@ -7,6 +7,7 @@ LPCWSTR g_strException = nullptr;
 HBRUSH	g_hbrDarkBackground = nullptr;
 OPENFILENAME* g_pofn = nullptr;
 std::vector<HMODULE>	g_phModule;
+BOOL g_bDarkMode = FALSE;
 
 extern std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 
@@ -263,6 +264,7 @@ BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
     }
     if (JS_IsObject(e)) {
         JS_SetPropertyStr(el->ctx, e, "target", el->jsThis);
+        JS_SetPropertyStr(el->ctx, e, "type", JS_NewString(el->ctx, name));
     }
     auto it = el->events.map.find(name);
     if (it == el->events.map.end()) {
@@ -288,6 +290,11 @@ JSValue CreateKeyEvent(JSContext* ctx, WPARAM vk)
     wchar_t buf[8];
     GetKeyNameTextW((LONG)(MapVirtualKeyW((UINT)vk, 0) << 16), buf, 8);
     JS_SetPropertyStr(ctx, e, "key", JS_NewString(ctx, WideToUtf8(buf).c_str()));
+
+    JS_SetPropertyStr(ctx, e, "shiftKey", JS_NewBool(ctx, GetKeyState(VK_SHIFT) < 0));
+    JS_SetPropertyStr(ctx, e, "ctrlKey", JS_NewBool(ctx, GetKeyState(VK_CONTROL) < 0));
+    JS_SetPropertyStr(ctx, e, "altKey", JS_NewBool(ctx, GetKeyState(VK_MENU) < 0));
+    JS_SetPropertyStr(ctx, e, "metaKey", JS_NewBool(ctx, GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0));
     return e;
 }
 
@@ -330,97 +337,17 @@ BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPAR
         buttons |= 16;
     }
     JS_SetPropertyStr(el->ctx, e, "buttons", JS_NewInt32(el->ctx, buttons));
-    JS_SetPropertyStr(el->ctx, e, "clientX", JS_NewInt32(el->ctx, LOWORD(lParam)));
-    JS_SetPropertyStr(el->ctx, e, "clientY", JS_NewInt32(el->ctx, HIWORD(lParam)));
-	return FireEvent(hwnd, name, e);
+	POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+    JS_SetPropertyStr(el->ctx, e, "clientX", JS_NewInt32(el->ctx, pt.x));
+    JS_SetPropertyStr(el->ctx, e, "clientY", JS_NewInt32(el->ctx, pt.y));
+	::ClientToScreen(hwnd, &pt);
+    JS_SetPropertyStr(el->ctx, e, "screenX", JS_NewInt32(el->ctx, pt.x));
+	JS_SetPropertyStr(el->ctx, e, "screenY", JS_NewInt32(el->ctx, pt.y));
+    JS_SetPropertyStr(el->ctx, e, "shiftKey", JS_NewBool(el->ctx, (wParam & MK_SHIFT) != 0));
+    JS_SetPropertyStr(el->ctx, e, "ctrlKey", JS_NewBool(el->ctx, (wParam & MK_CONTROL) != 0));
+    JS_SetPropertyStr(el->ctx, e, "altKey", JS_NewBool(el->ctx, (wParam & MK_ALT) != 0));
+	JS_SetPropertyStr(el->ctx, e, "metaKey", JS_NewBool(el->ctx, GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0));
+    return FireEvent(hwnd, name, e);
 }
-
-void destroy_element(UIElement* el)
-{
-    if (el) {
-        // free event handlers
-        for (auto& [name, vec] : el->events.map) {
-            for (auto& fn : vec) {
-                JS_FreeValue(el->ctx, fn);
-            }
-        }
-
-        // free JS object
-        JS_FreeValue(el->ctx, el->jsThis);
-
-        delete el;
-    }
-}
-
-LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    switch (message)
-    {
-    case WM_KEYDOWN:
-    case WM_SYSKEYDOWN:
-        if (FireKeyEvent(hwnd, "keydown", wParam)) {
-            return 0;
-        }
-        break;
-    case WM_KEYUP:
-    case WM_SYSKEYUP:
-        if (FireKeyEvent(hwnd, "keyup", wParam)) {
-            return 0;
-        }
-        break;
-    case WM_LBUTTONDOWN:
-        if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
-            return 0;
-        }
-        break;
-    case WM_RBUTTONDOWN:
-        if (FireMouseEvent(hwnd, "mousedown", 2, wParam, lParam)) {
-            return 0;
-        }
-        break;
-    case WM_MBUTTONDOWN:
-        if (FireMouseEvent(hwnd, "mousedown", 1, wParam, lParam)) {
-            return 0;
-        }
-        break;
-    case WM_XBUTTONDOWN:
-        {
-            WORD x = GET_XBUTTON_WPARAM(wParam);
-            if (FireMouseEvent(hwnd, "mousedown", (x == XBUTTON1) ? 3 : 4, wParam, lParam)) {
-                return 0;
-            }
-        }
-        break;
-    case WM_LBUTTONUP:
-        if (FireMouseEvent(hwnd, "mouseup", 0, wParam, lParam)) {
-            return 0;
-        }
-        break;
-    case WM_RBUTTONUP:
-        if (FireMouseEvent(hwnd, "mouseup", 2, wParam, lParam)) {
-            return 0;
-        }
-        break;
-    case WM_MBUTTONUP:
-        if (FireMouseEvent(hwnd, "mouseup", 1, wParam, lParam)) {
-            return 0;
-        }
-        break;
-    case WM_XBUTTONUP:
-        {
-            WORD x = GET_XBUTTON_WPARAM(wParam);
-            if (FireMouseEvent(hwnd, "mouseup", (x == XBUTTON1) ? 3 : 4, wParam, lParam)) {
-                return 0;
-            }
-        }
-        break;
-    case WM_NCDESTROY:
-        destroy_element(GetUIElement(hwnd));
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
-        break;
-    }
-    return 1;
-}
-
 
 #endif

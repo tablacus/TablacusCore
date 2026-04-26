@@ -57,7 +57,8 @@ struct UIElement  {
     JSContext* ctx;
     JSValue jsThis;
     HWND hwnd;
-    BOOL defaultPrevented;
+    std::wstring id;
+//    BOOL defaultPrevented;
 };
 
 bool JS_ToWStrNullable(JSContext* ctx, JSValueConst val, WStrNullable& out);
@@ -77,7 +78,7 @@ uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr);
 BOOL FireEvent(JSContext* ctx,HWND hwnd, const char* name, JSValue e);
 BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk);
 BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam);
-LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+std::wstring JS_ToWideString(JSContext* ctx, JSValueConst val);
 
 #if !defined(_WINDLL) && !defined(_DEBUG)
 #pragma comment(linker, "/entry:\"wWinMain\"")

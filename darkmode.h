@@ -15,7 +15,6 @@
 #pragma warning(pop)
 #include "common.h"
 
-
 //Dark mode
 #define TECL_DARKTEXT 0xffffff
 #define TECL_DARKTEXT2 0xe0e0e0
@@ -60,3 +59,6 @@ BOOL teIsDarkColor(COLORREF cl);
 VOID teFixGroup(LPNMLVCUSTOMDRAW lplvcd, COLORREF clrBk);
 LRESULT CALLBACK CBTProc(int nCode, WPARAM wParam, LPARAM lParam);
 VOID teInitDarkMode();
+VOID FixChildren(HWND hwnd);
+VOID FixChild(HWND hwnd, HWND hwnd1);
+LRESULT DarkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

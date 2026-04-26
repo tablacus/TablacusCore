@@ -7,6 +7,24 @@
 
 JSValue g_pMBText;
 JSClassID g_class_id;
+static std::unordered_map<std::wstring, UIElement*> g_idMap;
+static HWND g_hwndActiveMouse = nullptr;
+static POINT g_ptMouseDown = {};
+
+std::wstring js_read_string(JSContext* ctx, JSValue& opts, LPCSTR name, LPCWSTR def)
+{
+    std::wstring str = def;
+    JSValue v = JS_GetPropertyStr(ctx, opts, name);
+    if (JS_IsString(v)) {
+        WStrNullable w;
+        JS_ToWStrNullable(ctx, v, w);
+        if (w.ptr) {
+            str = w.ptr;
+        }
+    }
+    JS_FreeValue(ctx, v);
+    return str;
+}
 
 int teGetModuleFileName(HMODULE hModule, std::wstring& out)
 {
@@ -88,12 +106,123 @@ UIElement* get_element(JSContext* ctx, JSValueConst val)
     return el;
 }
 
+void destroy_element(UIElement* el)
+{
+    if (el) {
+        // free event handlers
+        for (auto& [name, vec] : el->events.map) {
+            for (auto& fn : vec) {
+                JS_FreeValue(el->ctx, fn);
+            }
+        }
+
+        // free JS object
+        JS_FreeValue(el->ctx, el->jsThis);
+        if (!el->id.empty()) {
+            g_idMap.erase(el->id);
+        }
+        delete el;
+    }
+}
+
+LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (FireKeyEvent(hwnd, "keydown", wParam)) {
+            return 0;
+        }
+        break;
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        if (FireKeyEvent(hwnd, "keyup", wParam)) {
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN:
+        g_hwndActiveMouse = hwnd;
+        g_ptMouseDown.x = GET_X_LPARAM(lParam);
+        g_ptMouseDown.y = GET_Y_LPARAM(lParam);
+        SetCapture(hwnd);
+        if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_RBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 2, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_MBUTTONDOWN:
+        if (FireMouseEvent(hwnd, "mousedown", 1, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_XBUTTONDOWN:
+    {
+        WORD x = GET_XBUTTON_WPARAM(wParam);
+        if (FireMouseEvent(hwnd, "mousedown", (x == XBUTTON1) ? 3 : 4, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONUP:
+        ReleaseCapture();
+        if (FireMouseEvent(hwnd, "mouseup", 0, wParam, lParam)) {
+            return 0;
+        }
+        if (g_hwndActiveMouse == hwnd) {
+            g_hwndActiveMouse = nullptr;
+            int dx = abs(GET_X_LPARAM(lParam) - g_ptMouseDown.x);
+            int dy = abs(GET_Y_LPARAM(lParam) - g_ptMouseDown.y);
+            if (dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG)) {
+                if (FireMouseEvent(hwnd, "click", 0, wParam, lParam)) {
+                    return 0;
+                }
+            }
+        }
+        g_hwndActiveMouse = nullptr;
+        break;
+    case WM_RBUTTONUP:
+        if (FireMouseEvent(hwnd, "mouseup", 2, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_MBUTTONUP:
+        if (FireMouseEvent(hwnd, "mouseup", 1, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_XBUTTONUP:
+    {
+        WORD x = GET_XBUTTON_WPARAM(wParam);
+        if (FireMouseEvent(hwnd, "mouseup", (x == XBUTTON1) ? 3 : 4, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONDBLCLK:
+        if (FireMouseEvent(hwnd, "dblclick", 0, wParam, lParam)) {
+            return 0;
+        }
+		break;
+    case WM_NCDESTROY:
+        destroy_element(GetUIElement(hwnd));
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+        break;
+    }
+    return DarkProc(hwnd, message, wParam, lParam);
+}
+
 LRESULT CALLBACK ControlProc(HWND hwnd, UINT msg,
     WPARAM wParam, LPARAM lParam,
     UINT_PTR, DWORD_PTR refData)
 {
-    if (CommonProc(hwnd, msg, wParam, lParam) == 0) {
-        return 0;
+    LRESULT lResult = CommonProc(hwnd, msg, wParam, lParam);
+    if (lResult != 1) {
+        return lResult;
     }
 
     return DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -113,6 +242,11 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
     JS_SetOpaque(obj, el);
     // Associate HWND with UIElement
     SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)el);
+    // ID
+	el->id = js_read_string(ctx, opts, "id", L"");
+    if (!el->id.empty()) {
+		g_idMap[el->id] = el;
+    }
 
     // ===== Parse listeners and store directly =====
     JSValue listeners = JS_GetPropertyStr(ctx, opts, "listeners");
@@ -218,22 +352,20 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
     JS_FreeAtom(ctx, atom);
 }
 
-std::wstring js_read_string(JSContext* ctx, JSValue &opts, LPCSTR name, LPCWSTR def)
+JSValue js_getElementById(JSContext* ctx, JSValueConst this_val,
+    int argc, JSValueConst* argv)
 {
-    std::wstring str = def;
-    JSValue v = JS_GetPropertyStr(ctx, opts, name);
-    if (JS_IsString(v)) {
-        WStrNullable w;
-        JS_ToWStrNullable(ctx, v, w);
-        if (w.ptr) {
-            str = w.ptr;
-        }
+    if (argc < 1 || !JS_IsString(argv[0])) {
+        return JS_NULL;
     }
-    JS_FreeValue(ctx, v);
-    return str;
+    std::wstring id = JS_ToWideString(ctx, argv[0]);
+    auto it = g_idMap.find(id);
+
+    if (it == g_idMap.end()) {
+        return JS_NULL;
+    }
+    return JS_DupValue(ctx, it->second->jsThis);
 }
-
-
 JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     int argc, JSValueConst* argv)
 {
@@ -243,8 +375,8 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
     // Get element type (e.g. "BUTTON")
-    const char* type = JS_ToCString(ctx, argv[0]);
-    if (!type) {
+    std::wstring type = JS_ToWideString(ctx, argv[0]);
+    if (type.empty()) {
         return JS_EXCEPTION;
     }
     JSValue opts = argc >= 2 ? argv[1] : JS_UNDEFINED;
@@ -253,8 +385,8 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     // ===== Default values =====
     DWORD style = WS_OVERLAPPEDWINDOW;
     DWORD exStyle = 0;
-    int x = CW_USEDEFAULT;
-    int y = CW_USEDEFAULT;
+    int x = 0;
+    int y = 0;
     int width = 80;
     int height = 20;
     style = JS_GetPropertyInt(ctx, opts, "style", style);
@@ -269,7 +401,7 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     std::wstring text = js_read_string(ctx, opts, "text", L"");
 
     // --- BUTTON creation ---
-    if (_stricmp(type, "BUTTON") == 0)
+    if (lstrcmpi(type.c_str(), L"BUTTON") == 0)
     {
         hwnd = CreateWindowExW(
             0,
@@ -283,13 +415,25 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
             nullptr
         );
         FixChild(parent->hwnd, hwnd);
-    }
-    else {
-        JS_FreeCString(ctx, type);
+    } else if (lstrcmpi(type.c_str(), L"EDIT") == 0) {
+        hwnd = CreateWindowExW(
+            WS_EX_CLIENTEDGE,              // sunken border
+            L"EDIT",
+            text.c_str(),
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+            x, y, width, height,      // default position/size
+            parent->hwnd,
+            nullptr,
+            GetModuleHandle(nullptr),
+            nullptr
+        );
+        FixChild(parent->hwnd, hwnd);
+		// Placeholder text
+        std::wstring placeholder = js_read_string(ctx, opts, "placeholder", L"");
+        SendMessage(hwnd, EM_SETCUEBANNER, TRUE, (LPARAM)placeholder.c_str());
+    } else {
         return JS_EXCEPTION;
     }
-
-    JS_FreeCString(ctx, type);
 
     // Create JS object
     JSValue obj = JS_NewObjectClass(ctx, g_class_id);
@@ -374,6 +518,12 @@ JSValue js_CreateWindow(JSContext* ctx,
         JS_NewCFunction(ctx, js_createElement, "createElement", 2)
     );
 
+    JS_SetPropertyStr(
+        ctx,
+        obj,
+        "getElementById",
+        JS_NewCFunction(ctx, js_getElementById, "getElementById", 1)
+    );
     return obj;
 }
 
