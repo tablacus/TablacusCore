@@ -10,6 +10,8 @@ JSClassID g_class_id;
 static std::unordered_map<std::wstring, UIElement*> g_idMap;
 static HWND g_hwndActiveMouse = nullptr;
 static POINT g_ptMouseDown = {};
+static HWND g_hwndHover = nullptr;
+static BOOL g_bInputChanged = FALSE;
 
 std::wstring js_read_string(JSContext* ctx, JSValue& opts, LPCSTR name, LPCWSTR def)
 {
@@ -82,16 +84,17 @@ int JS_GetPropertyInt(JSContext* ctx, JSValue opts, const char* name, int def) {
 };
 
 // =====  get int64 property =====
+int JS_ToInt64Ex(JSContext* ctx, int64_t* pres, JSValueConst val) {
+    if (JS_IsBigInt(val)) {
+        return JS_ToBigInt64(ctx, pres, val);
+    }
+    return JS_ToInt64(ctx, pres, val);
+}
+
 int64_t JS_GetPropertyInt64(JSContext* ctx, JSValue opts, const char* name, int64_t def) {
     JSValue v = JS_GetPropertyStr(ctx, opts, name);
     int64_t val = def;
-    if (!JS_IsUndefined(v)) {
-        if (JS_IsBigInt(v)) {
-            JS_ToBigInt64(ctx, &val, v);
-        } else {
-            JS_ToInt64(ctx, &val, v);
-        }
-    }
+    JS_ToInt64Ex(ctx, &val, v);
     JS_FreeValue(ctx, v);
     return val;
 };
@@ -208,6 +211,55 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 		break;
+    case WM_MOUSEWHEEL:
+        if (FireMouseEvent(hwnd, "wheel", -1, wParam, lParam)) {
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE:
+    {
+        if (FireMouseEvent(hwnd, "mousemove", 0, wParam, lParam)) {
+            return 0;
+        }
+        if (g_hwndHover != hwnd) {
+            g_hwndHover = hwnd;
+            FireMouseEvent(hwnd, "mouseover", 0, wParam, lParam);
+        }
+        // request leave event
+        TRACKMOUSEEVENT tme{};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hwnd;
+        TrackMouseEvent(&tme);
+        break;
+    }
+    case WM_MOUSELEAVE:
+        if (g_hwndHover == hwnd) {
+            g_hwndHover = nullptr;
+        }
+        if (FireEvent(hwnd, "mouseout", JS_UNDEFINED)) {
+            return 0;
+        }
+        break;
+    case WM_COMMAND:
+    {
+        int code = HIWORD(wParam);
+        HWND hCtrl = (HWND)lParam;
+        if (code == EN_CHANGE) {
+            g_bInputChanged = TRUE;
+            if (FireEvent(hCtrl, "input", JS_UNDEFINED)) {
+                return 0;
+            }
+        } else if (code == EN_KILLFOCUS) {
+            if (g_bInputChanged) {
+                g_bInputChanged = FALSE;
+                if (FireEvent(hCtrl, "change", JS_UNDEFINED)) {
+                    return 0;
+                }
+            }
+        }
+        break;
+    }
     case WM_NCDESTROY:
         destroy_element(GetUIElement(hwnd));
         SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
@@ -434,6 +486,8 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     } else {
         return JS_EXCEPTION;
     }
+    HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    SendMessage(hwnd, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Create JS object
     JSValue obj = JS_NewObjectClass(ctx, g_class_id);
@@ -501,6 +555,8 @@ JSValue js_CreateWindow(JSContext* ctx,
     if (!hwnd) {
         return JS_ThrowInternalError(ctx, "CreateWindow failed");
     }
+    HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    SendMessage(hwnd, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Apply dark mode if supported
     teGetDarkMode();
@@ -533,7 +589,7 @@ JSValue js_GetModuleFileName(JSContext* ctx,
     JSValueConst* argv)
 {
     int64_t hModule;
-    JS_ToInt64(ctx, &hModule, argv[0]);
+    JS_ToInt64Ex(ctx, &hModule, argv[0]);
     std::wstring fileName;
     teGetModuleFileName((HMODULE)hModule, fileName);
     return JS_NewString(ctx, WideToUtf8(fileName.c_str()).c_str());
@@ -573,7 +629,7 @@ JSValue js_MessageBox(JSContext* ctx,
         return JS_ThrowTypeError(ctx, "MessageBox requires at least 3 arguments");
     }
     int64_t hwnd;
-    JS_ToInt64(ctx, &hwnd, argv[0]);
+    JS_ToInt64Ex(ctx, &hwnd, argv[0]);
     WStrNullable text;
     JS_ToWStrNullable(ctx, argv[1], text);
     WStrNullable caption;
@@ -601,7 +657,7 @@ JSValue js_ShowWindow(JSContext* ctx,
     JSValueConst* argv)
 {
     int64_t hwnd;
-    JS_ToInt64(ctx, &hwnd, argv[0]);
+    JS_ToInt64Ex(ctx, &hwnd, argv[0]);
     int nCmdShow;
     JS_ToInt32(ctx, &nCmdShow, argv[1]);
     return JS_NewBool(ctx, ShowWindow((HWND)hwnd, nCmdShow));
@@ -613,7 +669,7 @@ JSValue js_UpdateWindow(JSContext* ctx,
     JSValueConst* argv)
 {
     int64_t hwnd;
-    JS_ToInt64(ctx, &hwnd, argv[0]);
+    JS_ToInt64Ex(ctx, &hwnd, argv[0]);
     return JS_NewBool(ctx, UpdateWindow((HWND)hwnd));
 }
 

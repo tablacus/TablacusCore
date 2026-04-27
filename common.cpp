@@ -262,6 +262,9 @@ BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
     if (!el) {
         return FALSE;
     }
+    if (JS_IsUndefined(e)) {
+        e = JS_NewObject(el->ctx);
+    }
     if (JS_IsObject(e)) {
         JS_SetPropertyStr(el->ctx, e, "target", el->jsThis);
         JS_SetPropertyStr(el->ctx, e, "type", JS_NewString(el->ctx, name));
@@ -282,7 +285,6 @@ BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
 JSValue CreateKeyEvent(JSContext* ctx, WPARAM vk)
 {
     JSValue e = JS_NewObject(ctx);
-
     // keyCode
     JS_SetPropertyStr(ctx, e, "keyCode", JS_NewInt32(ctx, (int)vk));
 
@@ -305,19 +307,12 @@ BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk)
         return FALSE;
     }
     JSValue e = CreateKeyEvent(el->ctx, vk);
-   return FireEvent(hwnd, name, e);
+    return FireEvent(hwnd, name, e);
 }
 
-BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam)
+JSValue CreateMouseEvent(JSContext* ctx, WPARAM wParam)
 {
-    auto* el = GetUIElement(hwnd);
-    if (!el) {
-        return FALSE;
-    }
-
-    JSValue e = JS_NewObject(el->ctx);
-
-    JS_SetPropertyStr(el->ctx, e, "button", JS_NewInt32(el->ctx, button));
+    JSValue e = JS_NewObject(ctx);
 
     // buttons (Win32 → JS)
     int buttons = 0;
@@ -336,17 +331,34 @@ BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPAR
     if (wParam & MK_XBUTTON2) {
         buttons |= 16;
     }
-    JS_SetPropertyStr(el->ctx, e, "buttons", JS_NewInt32(el->ctx, buttons));
-	POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+    JS_SetPropertyStr(ctx, e, "buttons", JS_NewInt32(ctx, buttons));
+    JS_SetPropertyStr(ctx, e, "shiftKey", JS_NewBool(ctx, (wParam & MK_SHIFT) != 0));
+    JS_SetPropertyStr(ctx, e, "ctrlKey", JS_NewBool(ctx, (wParam & MK_CONTROL) != 0));
+    JS_SetPropertyStr(ctx, e, "altKey", JS_NewBool(ctx, (wParam & MK_ALT) != 0));
+    JS_SetPropertyStr(ctx, e, "metaKey", JS_NewBool(ctx, GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0));
+    return e;
+}
+
+BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam)
+{
+    auto* el = GetUIElement(hwnd);
+    if (!el) {
+        return FALSE;
+    }
+    
+    JSValue e = CreateMouseEvent(el->ctx, wParam);
+    POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+	if (button >= 0) { // Button event
+        JS_SetPropertyStr(el->ctx, e, "button", JS_NewInt32(el->ctx, button));
+    } else { //Wheel event
+        JS_SetPropertyStr(el->ctx, e, "deltaY", JS_NewInt32(el->ctx, GET_WHEEL_DELTA_WPARAM(wParam)));
+        ::ScreenToClient(hwnd, &pt);
+    }
     JS_SetPropertyStr(el->ctx, e, "clientX", JS_NewInt32(el->ctx, pt.x));
     JS_SetPropertyStr(el->ctx, e, "clientY", JS_NewInt32(el->ctx, pt.y));
-	::ClientToScreen(hwnd, &pt);
+    ::ClientToScreen(hwnd, &pt);
     JS_SetPropertyStr(el->ctx, e, "screenX", JS_NewInt32(el->ctx, pt.x));
-	JS_SetPropertyStr(el->ctx, e, "screenY", JS_NewInt32(el->ctx, pt.y));
-    JS_SetPropertyStr(el->ctx, e, "shiftKey", JS_NewBool(el->ctx, (wParam & MK_SHIFT) != 0));
-    JS_SetPropertyStr(el->ctx, e, "ctrlKey", JS_NewBool(el->ctx, (wParam & MK_CONTROL) != 0));
-    JS_SetPropertyStr(el->ctx, e, "altKey", JS_NewBool(el->ctx, (wParam & MK_ALT) != 0));
-	JS_SetPropertyStr(el->ctx, e, "metaKey", JS_NewBool(el->ctx, GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0));
+    JS_SetPropertyStr(el->ctx, e, "screenY", JS_NewInt32(el->ctx, pt.y));
     return FireEvent(hwnd, name, e);
 }
 

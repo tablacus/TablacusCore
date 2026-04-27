@@ -31,10 +31,10 @@ window.show();
 
 const edit = window.createElement("EDIT", {
     placeholder: "place holder",
-    height: 30,
+    height: 20,
     width: 300,
     listeners: {
-        keyup: [
+        change: [
             (e) => {
                 const el = window.getElementById("btn");
                 if (el) {
@@ -42,8 +42,13 @@ const edit = window.createElement("EDIT", {
                 }
             },
         ],
+        input: [
+            (e) => {
+                window.text = e.target.text;
+            },
+        ],
         dblclick: (e) => {
-            api.MessageBox(null, "Double Click", "OK", api.MB_YESNO, {
+            api.MessageBox(window.hwnd, "Double Click", "OK", api.MB_YESNO, {
                     [api.IDYES]: "ABC",
                     [api.IDNO]: "DEF",
                 },
@@ -55,9 +60,9 @@ const edit = window.createElement("EDIT", {
 const btn = window.createElement("BUTTON", {
     text: "BUTTON",
     id: "btn",
-    y:50,
-    height: 30,
-    width: 300,
+    y:40,
+    height: 20,
+    width: 500,
     listeners: {
         keydown: [
             (e) => { e.target.text = ["keyDown", e.key, e.keyCode].join(','); },
@@ -69,16 +74,27 @@ const btn = window.createElement("BUTTON", {
             },
         ],
         mousedown: [
-            (e) => { e.target.text = ["mouseDown", e.button, e.buttons].join(','); },
+            (e) => { e.target.text = ["mouseDown", e.button, e.buttons, e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
         ],
         mouseup: [
-            (e) => { e.target.text = ["mouseUp", e.button, e.buttons].join(','); },
+            (e) => { e.target.text = ["mouseUp", e.button, e.buttons, e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
         ],
-        click: (e) => { api.MessageBox(null, "Click", "OK", api.MB_YESNO, {
+        dblclick: (e) => { api.MessageBox(window.hwnd, "Click", "OK", api.MB_YESNO, {
                 [api.IDYES]: "IDYES",
                 [api.IDNO]: "IDNO",
             },
-        );}
+        );
+        },
+        mouseover: [
+            (e) => { e.target.text = ["mouseOver", e.clientX, e.clientY, e.screenX, e.screenY, e.button, e.buttons].join(','); },
+        ],
+        mouseout: [
+            (e) => { e.target.text = ["mouseOut", e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
+        ],
+        wheel: [
+            (e) => { e.target.text = ["wheel", e.clientX, e.clientY, e.screenX, e.screenY, e.deltaY].join(','); },
+        ],
+
     }
 });
 
