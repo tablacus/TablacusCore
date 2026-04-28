@@ -7,6 +7,7 @@
 #include <shobjidl.h>
 #include <shlguid.h>
 #include <shlwapi.h>
+#include <shlobj.h>
 #include <shlobj_core.h>
 #include <pathcch.h>
 #pragma warning(push)
@@ -58,6 +59,7 @@ struct UIElement  {
     JSValue jsThis;
     HWND hwnd;
     std::wstring id;
+    IExplorerBrowser* pEB;
 //    BOOL defaultPrevented;
 };
 

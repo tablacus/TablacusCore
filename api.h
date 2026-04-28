@@ -9,3 +9,4 @@ extern "C" {
 
 JSModuleDef* js_init_module_api(JSContext* ctx, const char* module_name);
 LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+void ui_element_finalizer(JSRuntime* rt, JSValueConst val);

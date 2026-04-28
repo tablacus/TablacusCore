@@ -22,9 +22,6 @@ extern LPCWSTR g_strException;
 
 JSContext* g_ctx;
 
-static void ui_element_finalizer(JSRuntime* rt, JSValueConst val) {
-}
-
 std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 
 #ifdef _WINDLL
@@ -101,6 +98,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     HMODULE hDll = LoadLibrary(L"shell32.dll");
 //    * (FARPROC*)&_SHRunDialog = GetProcAddress(g_hShell32, MAKEINTRESOURCEA(61));
     *(FARPROC*)&_RegenerateUserEnvironment = GetProcAddress(hDll, "RegenerateUserEnvironment");
+
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     // Perform application initialization:
     if (!InitInstance (hInstance, nCmdShow)) {

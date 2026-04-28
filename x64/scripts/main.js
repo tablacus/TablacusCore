@@ -29,8 +29,41 @@ const window = api.CreateWindow({
 
 window.show();
 
+const stat = window.createElement("STATIC", {
+    text: "static",
+    id: "static",
+    y: 0,
+    height: 20,
+    width: 300,
+    listeners: {
+        keydown: [
+            (e) => { e.target.text = ["keyDown", e.key, e.keyCode].join(','); },
+        ],
+        keyup: [
+            (e) => {
+                e.target.text = ["keyup", e.key, e.keyCode].join(',');
+                return false;
+            },
+        ],
+        mousedown: [
+            (e) => { e.target.text = ["mouseDown", e.button, e.buttons, e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
+        ],
+        mouseup: [
+            (e) => { e.target.text = ["mouseUp", e.button, e.buttons, e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
+        ],
+        dblclick: (e) => {
+            api.MessageBox(window.hwnd, "Double Click", "OK", api.MB_YESNO, {
+                [api.IDYES]: "ABC",
+                [api.IDNO]: "DEF",
+            },
+            );
+        }
+    }
+});
+
 const edit = window.createElement("EDIT", {
     placeholder: "place holder",
+    y: 20,
     height: 20,
     width: 300,
     listeners: {
@@ -60,7 +93,7 @@ const edit = window.createElement("EDIT", {
 const btn = window.createElement("BUTTON", {
     text: "BUTTON",
     id: "btn",
-    y:40,
+    y: 40,
     height: 20,
     width: 500,
     listeners: {
@@ -98,12 +131,19 @@ const btn = window.createElement("BUTTON", {
     }
 });
 
-window.text = "Hello, World!";
+const exp = window.createElement("ExplorerBrowser", {
+    text: "BUTTON",
+    y: 60,
+    height: 480,
+    width: 780,
+    listeners: {
+        mouseover: [
+            (e) => { e.target.text = ["mouseOver", e.clientX, e.clientY, e.screenX, e.screenY, e.button, e.buttons].join(','); },
+        ],
+        mouseout: [
+            (e) => { e.target.text = ["mouseOut", e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
+        ],
+    }
+});
 
-/*
-let r = api.MessageBox(null, ["テスト", window.hwnd].join(":") , "確認", api.MB_YESNO, {
-    [api.IDYES]: "IDYES",
-    [api.IDNO]: "IDNO",
-   }
-);
-*/
+window.text = "Hello, World!";

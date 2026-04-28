@@ -13,6 +13,14 @@ static POINT g_ptMouseDown = {};
 static HWND g_hwndHover = nullptr;
 static BOOL g_bInputChanged = FALSE;
 
+UIElement* get_element(JSValueConst val) {
+    return (UIElement*)JS_GetOpaque(val, g_class_id);
+}
+
+void ui_element_finalizer(JSRuntime* rt, JSValueConst val)
+{
+}
+
 std::wstring js_read_string(JSContext* ctx, JSValue& opts, LPCSTR name, LPCWSTR def)
 {
     std::wstring str = def;
@@ -99,35 +107,6 @@ int64_t JS_GetPropertyInt64(JSContext* ctx, JSValue opts, const char* name, int6
     return val;
 };
 
-UIElement* get_element(JSContext* ctx, JSValueConst val)
-{
-    UIElement* el = (UIElement*)JS_GetOpaque(val, g_class_id);
-    if (!el) {
-        JS_ThrowTypeError(ctx, "invalid UIElement");
-        return nullptr;
-    }
-    return el;
-}
-
-void destroy_element(UIElement* el)
-{
-    if (el) {
-        // free event handlers
-        for (auto& [name, vec] : el->events.map) {
-            for (auto& fn : vec) {
-                JS_FreeValue(el->ctx, fn);
-            }
-        }
-
-        // free JS object
-        JS_FreeValue(el->ctx, el->jsThis);
-        if (!el->id.empty()) {
-            g_idMap.erase(el->id);
-        }
-        delete el;
-    }
-}
-
 LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -210,7 +189,7 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (FireMouseEvent(hwnd, "dblclick", 0, wParam, lParam)) {
             return 0;
         }
-		break;
+        break;
     case WM_MOUSEWHEEL:
         if (FireMouseEvent(hwnd, "wheel", -1, wParam, lParam)) {
             return 0;
@@ -250,7 +229,8 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (FireEvent(hCtrl, "input", JS_UNDEFINED)) {
                 return 0;
             }
-        } else if (code == EN_KILLFOCUS) {
+        }
+        else if (code == EN_KILLFOCUS) {
             if (g_bInputChanged) {
                 g_bInputChanged = FALSE;
                 if (FireEvent(hCtrl, "change", JS_UNDEFINED)) {
@@ -260,10 +240,44 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     }
-    case WM_NCDESTROY:
-        destroy_element(GetUIElement(hwnd));
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+    case WM_SIZE:
+    {
+        UIElement* el = GetUIElement(hwnd);
+        if (el && el->pEB) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            el->pEB->SetRect(nullptr, rc);
+        }
         break;
+    }
+    case WM_NCDESTROY:
+    {
+        //SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+        UIElement* el = GetUIElement(hwnd);
+        if (el) {
+            RemoveProp(hwnd, L"UIElement");
+            if (el->hwnd == hwnd) {
+                if (el->pEB) {
+                    el->pEB->Destroy();
+                    el->pEB->Release();
+                }
+                // free event handlers
+                for (auto& [name, vec] : el->events.map) {
+                    for (auto& fn : vec) {
+                        JS_FreeValue(el->ctx, fn);
+                    }
+                }
+
+                // free JS object
+                JS_FreeValue(el->ctx, el->jsThis);
+                if (!el->id.empty()) {
+                    g_idMap.erase(el->id);
+                }
+                delete el;
+            }
+        }
+        break;
+    }
     }
     return DarkProc(hwnd, message, wParam, lParam);
 }
@@ -293,7 +307,8 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
     el->jsThis = JS_DupValue(ctx, obj);
     JS_SetOpaque(obj, el);
     // Associate HWND with UIElement
-    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)el);
+//    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)el);
+    SetProp(hwnd, L"UIElement", el);
     // ID
 	el->id = js_read_string(ctx, opts, "id", L"");
     if (!el->id.empty()) {
@@ -348,7 +363,7 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
             [](JSContext* ctx, JSValueConst this_val,
                 int argc, JSValueConst* argv) -> JSValue {
 
-        UIElement* el = get_element(ctx, this_val);
+        UIElement* el = get_element(this_val);
         if (!el) {
             return JS_EXCEPTION;
         }
@@ -369,7 +384,7 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
         JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
             int argc, JSValueConst* argv) -> JSValue {
 
-        UIElement* el = get_element(ctx, this_val);
+        UIElement* el = get_element(this_val);
         if (!el) return JS_EXCEPTION;
 
         int len = GetWindowTextLengthW(el->hwnd);
@@ -383,7 +398,7 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
         JS_NewCFunction(ctx, [](JSContext* ctx, JSValueConst this_val,
             int argc, JSValueConst* argv) -> JSValue {
 
-        UIElement* el = get_element(ctx, this_val);
+        UIElement* el = get_element(this_val);
         if (!el) return JS_EXCEPTION;
 
         if (argc > 0 && JS_IsString(argv[0])) {
@@ -422,7 +437,7 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     int argc, JSValueConst* argv)
 {
     // Get parent element (window or container)
-    UIElement* parent = get_element(ctx, this_val);
+    UIElement* parent = get_element(this_val);
     if (!parent) {
         return JS_EXCEPTION;
     }
@@ -451,6 +466,7 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
 
     // Read string
     std::wstring text = js_read_string(ctx, opts, "text", L"");
+    IExplorerBrowser* pEB = nullptr;
 
     // --- BUTTON creation ---
     if (lstrcmpi(type.c_str(), L"BUTTON") == 0)
@@ -466,7 +482,6 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
             GetModuleHandle(nullptr),
             nullptr
         );
-        FixChild(parent->hwnd, hwnd);
     } else if (lstrcmpi(type.c_str(), L"EDIT") == 0) {
         hwnd = CreateWindowExW(
             WS_EX_CLIENTEDGE,              // sunken border
@@ -479,13 +494,48 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
             GetModuleHandle(nullptr),
             nullptr
         );
-        FixChild(parent->hwnd, hwnd);
 		// Placeholder text
         std::wstring placeholder = js_read_string(ctx, opts, "placeholder", L"");
         SendMessage(hwnd, EM_SETCUEBANNER, TRUE, (LPARAM)placeholder.c_str());
+    }
+    else if (lstrcmpi(type.c_str(), L"STATIC") == 0) {
+        hwnd = CreateWindowExW(
+            0,
+            L"STATIC",
+            text.c_str(),
+            WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+            x, y, width, height,      // default position/size
+            parent->hwnd,
+            nullptr,
+            GetModuleHandle(nullptr),
+            nullptr
+        );
+    }
+    else if (PathMatchSpec(type.c_str(), L"Explorer*")) {
+        hwnd = CreateWindowExW(
+            0,
+            L"STATIC",
+            text.c_str(),
+            WS_CHILD | WS_VISIBLE,
+            x, y, width, height,      // default position/size
+            parent->hwnd,
+            nullptr,
+            GetModuleHandle(nullptr),
+            nullptr
+        );
+        HRESULT hr = CoCreateInstance(
+            CLSID_ExplorerBrowser,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&pEB)
+        );
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        pEB->Initialize(hwnd, &rc, nullptr);
     } else {
         return JS_EXCEPTION;
     }
+    FixChild(parent->hwnd, hwnd);
     HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     SendMessage(hwnd, WM_SETFONT, (WPARAM)hFont, TRUE);
 
@@ -493,7 +543,15 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     JSValue obj = JS_NewObjectClass(ctx, g_class_id);
     CommonSettings(hwnd, ctx, obj, opts);
     // Subclass the control to intercept events
-    SetWindowSubclass(hwnd, ControlProc, 0, (DWORD_PTR)get_element(ctx, obj));
+    SetWindowSubclass(hwnd, ControlProc, 0, 0);
+    if (pEB) {
+        UIElement* el = GetUIElement(hwnd);
+        el->pEB = pEB;
+        LPITEMIDLIST pidl = nullptr;
+        SHParseDisplayName(L"C:\\", nullptr, &pidl, 0, nullptr);
+        pEB->BrowseToIDList(pidl, SBSP_ABSOLUTE);
+        CoTaskMemFree(pidl);
+    }
     return obj;
 }
 

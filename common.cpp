@@ -240,7 +240,8 @@ int teStrCmpIWA(LPCWSTR lpStringW, LPCSTR lpStringA) {
 
 UIElement * GetUIElement(HWND hwnd)
 {
-    return (UIElement *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+//    return (UIElement *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+	return (UIElement*)GetProp(hwnd, L"UIElement");
 }
 
 uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
