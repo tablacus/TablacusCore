@@ -243,10 +243,10 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_SIZE:
     {
         UIElement* el = GetUIElement(hwnd);
-        if (el && el->pEB) {
+        if (el && el->pSink && el->pSink->m_pEB) {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            el->pEB->SetRect(nullptr, rc);
+            el->pSink->m_pEB->SetRect(nullptr, rc);
         }
         break;
     }
@@ -257,9 +257,9 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (el) {
             RemoveProp(hwnd, L"UIElement");
             if (el->hwnd == hwnd) {
-                if (el->pEB) {
-                    el->pEB->Destroy();
-                    el->pEB->Release();
+                if (el->pSink && el->pSink->m_pEB) {
+                    //el->pSink->m_pEB->Destroy();
+                    SafeRelease(&el->pSink->m_pEB);
                 }
                 // free event handlers
                 for (auto& [name, vec] : el->events.map) {
@@ -529,9 +529,16 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
             CLSCTX_INPROC_SERVER,
             IID_PPV_ARGS(&pEB)
         );
+        SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
         RECT rc;
         GetClientRect(hwnd, &rc);
         pEB->Initialize(hwnd, &rc, nullptr);
+        pEB->SetOptions(EBO_SHOWFRAMES | EBO_ALWAYSNAVIGATE);
+        IFolderViewOptions* pOptions;
+        if SUCCEEDED(pEB->QueryInterface(IID_PPV_ARGS(&pOptions))) {
+            pOptions->SetFolderViewOptions(FVO_VISTALAYOUT, FVO_VISTALAYOUT);
+            pOptions->Release();
+        }
     } else {
         return JS_EXCEPTION;
     }
@@ -546,7 +553,12 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     SetWindowSubclass(hwnd, ControlProc, 0, 0);
     if (pEB) {
         UIElement* el = GetUIElement(hwnd);
-        el->pEB = pEB;
+        CBrowserSink* pSink = new CBrowserSink(hwnd);
+        DWORD cookie = 0;
+        pEB->Advise(pSink, &pSink->m_dwEventsCookie);
+        pSink->m_pEB = pEB;
+        el->pSink = pSink;
+
         LPITEMIDLIST pidl = nullptr;
         SHParseDisplayName(L"C:\\", nullptr, &pidl, 0, nullptr);
         pEB->BrowseToIDList(pidl, SBSP_ABSOLUTE);

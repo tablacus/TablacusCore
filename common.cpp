@@ -11,6 +11,36 @@ BOOL g_bDarkMode = FALSE;
 
 extern std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 
+VOID teAdvise(IUnknown* punk, IID diid, IUnknown* punk2, PDWORD pdwCookie)
+{
+    IConnectionPointContainer* pCPC;
+    if (SUCCEEDED(punk->QueryInterface(IID_PPV_ARGS(&pCPC)))) {
+        IConnectionPoint* pCP;
+        if (SUCCEEDED(pCPC->FindConnectionPoint(diid, &pCP))) {
+            pCP->Advise(punk2, pdwCookie);
+            pCP->Release();
+        }
+        pCPC->Release();
+    }
+}
+
+VOID teUnadviseAndRelease(IUnknown* punk, IID diid, PDWORD pdwCookie)
+{
+    if (punk) {
+        IConnectionPointContainer* pCPC;
+        if SUCCEEDED(punk->QueryInterface(IID_PPV_ARGS(&pCPC))) {
+            IConnectionPoint* pCP;
+            if (SUCCEEDED(pCPC->FindConnectionPoint(diid, &pCP))) {
+                pCP->Unadvise(*pdwCookie);
+                pCP->Release();
+            }
+            pCPC->Release();
+        }
+        punk->Release();
+    }
+    *pdwCookie = 0;
+}
+
 VOID FreeBSTR(BSTR* bstr)
 {
     if (*bstr) {
@@ -361,6 +391,185 @@ BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPAR
     JS_SetPropertyStr(el->ctx, e, "screenX", JS_NewInt32(el->ctx, pt.x));
     JS_SetPropertyStr(el->ctx, e, "screenY", JS_NewInt32(el->ctx, pt.y));
     return FireEvent(hwnd, name, e);
+}
+
+CBrowserSink::CBrowserSink(HWND hwnd)
+{
+    refCount = 1;
+    m_hwnd = hwnd;
+    m_hwndDT = NULL;
+    m_hwndDV = NULL;
+    m_hwndLV = NULL;
+	m_pSV = nullptr;
+    m_pdisp = nullptr;
+}
+
+CBrowserSink::~CBrowserSink()
+{}
+
+HRESULT STDMETHODCALLTYPE CBrowserSink::QueryInterface(REFIID riid, void** ppv)
+{
+    static const QITAB qit[] =
+    {
+        QITABENT(CBrowserSink, IDispatch),
+        QITABENT(CBrowserSink, IExplorerBrowserEvents),
+        { 0 },
+#pragma warning( push )
+#pragma warning( disable: 4838 )
+    }
+#pragma warning( pop )
+    ;
+    return QISearch(this, qit, riid, ppv);
+/*    if (ppv == nullptr)
+    {
+        return E_POINTER;
+    }
+
+    if (riid == IID_IUnknown || riid == IID_IExplorerBrowserEvents)
+    {
+        *ppv = static_cast<IExplorerBrowserEvents*>(this);
+        AddRef();
+        return S_OK;
+    }
+
+    *ppv = nullptr;
+    return E_NOINTERFACE;*/
+}
+
+ULONG STDMETHODCALLTYPE CBrowserSink::AddRef()
+{
+    return InterlockedIncrement(&refCount);
+}
+
+ULONG STDMETHODCALLTYPE CBrowserSink::Release()
+{
+    LONG r = InterlockedDecrement(&refCount);
+
+    if (r == 0)
+    {
+        delete this;
+    }
+
+    return r;
+}
+
+HRESULT STDMETHODCALLTYPE CBrowserSink::OnNavigationPending(PCIDLIST_ABSOLUTE /*pidlFolder*/)
+{
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE CBrowserSink::OnViewCreated(IShellView* psv)
+{
+    if (m_hwnd != nullptr)
+    {
+        UIElement* el = GetUIElement(m_hwnd);
+        if (el != nullptr) {
+            SetRedraw(FALSE);
+            psv->QueryInterface(IID_PPV_ARGS(&m_pSV));
+            GetShellFolderView();
+            if (IUnknown_GetWindow(psv, &m_hwndDV) == S_OK) {
+                SetProp(m_hwndDV, L"UIElement", el);
+                FixChildren(m_hwndDV);
+                m_hwndLV = FindWindowExA(m_hwndDV, 0, WC_LISTVIEWA, NULL);
+                if (m_hwndLV) {
+                    SetProp(m_hwndLV, L"UIElement", el);
+				}
+
+                /*                    IFolderView* fv = nullptr;
+
+                                    if (SUCCEEDED(psv->QueryInterface(IID_PPV_ARGS(&fv))))
+                                    {
+                                        el->folderView = fv;
+                                    }*/
+            }
+        }
+    }
+
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE CBrowserSink::OnNavigationComplete(PCIDLIST_ABSOLUTE /*pidlFolder*/)
+{
+    if (m_hwnd != nullptr)
+    {
+        FixChildren(m_hwndDV);
+        SetFolderFlags(TRUE);
+        SetRedraw(TRUE);
+        FireEvent(m_hwnd, "navigate", JS_UNDEFINED);
+    }
+
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE CBrowserSink::OnNavigationFailed(PCIDLIST_ABSOLUTE /*pidlFolder*/)
+{
+    if (m_hwnd != nullptr)
+    {
+        FireEvent(m_hwnd, "navigateerror", JS_UNDEFINED);
+    }
+
+    return S_OK;
+}
+
+VOID CBrowserSink::SetRedraw(BOOL bRedraw)
+{
+    SendMessage(m_hwnd, WM_SETREDRAW, bRedraw, 0);
+}
+
+VOID CBrowserSink::SetFolderFlags(BOOL bGetIconSize)
+{
+    if (!m_pSV) {
+        return;
+    }
+    DWORD folderFlags = FWF_SHOWSELALWAYS;
+    IFolderView2* pFV2;
+    if (SUCCEEDED(m_pSV->QueryInterface(IID_PPV_ARGS(&pFV2)))) {
+        DWORD dwMask;
+        pFV2->GetCurrentFolderFlags(&dwMask);
+        dwMask = (dwMask ^ folderFlags) & (~(FWF_NOENUMREFRESH | FWF_USESEARCHFOLDER | FWF_SNAPTOGRID));
+        if (dwMask) {
+            pFV2->SetCurrentFolderFlags(dwMask, folderFlags);
+        }
+        SafeRelease(&pFV2);
+    }
+}
+
+STDMETHODIMP CBrowserSink::GetTypeInfoCount(UINT* pctinfo)
+{
+    *pctinfo = 0;
+    return S_OK;
+}
+
+STDMETHODIMP CBrowserSink::GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
+{
+    return E_NOTIMPL;
+}
+
+STDMETHODIMP CBrowserSink::GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
+{
+    return E_NOTIMPL;
+}
+
+STDMETHODIMP CBrowserSink::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr)
+{
+    switch (dispIdMember) {
+        case DISPID_SORTDONE://XP-
+            return S_OK;
+        case DISPID_FILELISTENUMDONE://XP+
+            return S_OK;
+    }
+
+	return DISP_E_MEMBERNOTFOUND;
+}
+
+VOID CBrowserSink::GetShellFolderView()
+{
+    teUnadviseAndRelease(m_pdisp, DIID_DShellFolderViewEvents, &m_dwCookie);
+    if (m_pSV && SUCCEEDED(m_pSV->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(&m_pdisp)))) {
+        teAdvise(m_pdisp, DIID_DShellFolderViewEvents, static_cast<IDispatch*>(this), &m_dwCookie);
+    } else {
+        m_pdisp = NULL;
+    }
 }
 
 #endif

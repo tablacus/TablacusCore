@@ -168,7 +168,7 @@ LRESULT CALLBACK TEDlgLVProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, 
 		case WM_ERASEBKGND:
 			RECT rc;
 			GetClientRect(hwnd, &rc);
-			FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
+			//FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
 			return 1;
 		case LVM_SETSELECTEDCOLUMN:
 			if (g_bDarkMode) {
@@ -416,7 +416,7 @@ LRESULT DarkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	if (g_bDarkMode) {
 		//HWND hwnd1;
-		CHAR pszClassA[MAX_CLASS_NAME];
+		//CHAR pszClassA[MAX_CLASS_NAME];
 		switch (msg) {
 		case WM_CTLCOLORBTN:
 		case WM_CTLCOLORSTATIC:
