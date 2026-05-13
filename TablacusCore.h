@@ -13,7 +13,7 @@
 #include "darkmode.h"
 
 extern JSClassID g_class_id;
-
+extern JSClassID g_cfolderitem_class_id;
 
 //Closed function
 typedef BOOL(WINAPI* LPFNRegenerateUserEnvironment)(LPVOID* lpEnvironment, BOOL bUpdate);

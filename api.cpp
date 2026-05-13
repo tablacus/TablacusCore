@@ -7,6 +7,7 @@
 
 JSValue g_pMBText;
 JSClassID g_class_id;
+JSClassID g_cfolderitem_class_id = 0;
 static std::unordered_map<std::wstring, UIElement*> g_idMap;
 static HWND g_hwndActiveMouse = nullptr;
 static POINT g_ptMouseDown = {};
@@ -19,6 +20,67 @@ UIElement* get_element(JSValueConst val) {
 
 void ui_element_finalizer(JSRuntime* rt, JSValueConst val)
 {
+}
+
+IShellItem* GetCurrentFolder(IExplorerBrowser* pEB)
+{
+    if (pEB == nullptr) {
+        return nullptr;
+    }
+
+    IShellView* pView = nullptr;
+
+    HRESULT hr = pEB->GetCurrentView(
+        IID_PPV_ARGS(&pView));
+
+    if (FAILED(hr) || pView == nullptr) {
+        return nullptr;
+    }
+
+    IFolderView* pFV = nullptr;
+
+    hr = pView->QueryInterface(IID_PPV_ARGS(&pFV));
+
+    pView->Release();
+
+    if (FAILED(hr) || pFV == nullptr) {
+        return nullptr;
+    }
+
+    IPersistFolder2* pPF2 = nullptr;
+
+    hr = pFV->GetFolder(
+        IID_PPV_ARGS(&pPF2));
+
+    pFV->Release();
+
+    if (FAILED(hr) || pPF2 == nullptr) {
+        return nullptr;
+    }
+
+    PIDLIST_ABSOLUTE pidl = nullptr;
+
+    hr = pPF2->GetCurFolder(&pidl);
+
+    pPF2->Release();
+
+    if (FAILED(hr) || pidl == nullptr) {
+        return nullptr;
+    }
+
+    IShellItem* pItem = nullptr;
+
+    hr = SHCreateItemFromIDList(
+        pidl,
+        IID_PPV_ARGS(&pItem));
+
+    CoTaskMemFree(pidl);
+
+    if (FAILED(hr)) {
+        return nullptr;
+    }
+
+    return pItem;
 }
 
 std::wstring js_read_string(JSContext* ctx, JSValue& opts, LPCSTR name, LPCWSTR def)
@@ -433,6 +495,28 @@ JSValue js_getElementById(JSContext* ctx, JSValueConst this_val,
     }
     return JS_DupValue(ctx, it->second->jsThis);
 }
+
+JSValue js_get_current_folder(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    UIElement* el = get_element(this_val);
+
+    if (el == nullptr || el->pSink == nullptr || el->pSink->m_pEB == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    IShellItem* pItem = GetCurrentFolder(el->pSink->m_pEB);
+    if (pItem == nullptr) {
+        return JS_NULL;
+    }
+    JSValue obj = NewFolderItem(ctx, pItem);
+    pItem->Release();
+    return obj;
+}
+
 JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
     int argc, JSValueConst* argv)
 {
@@ -563,6 +647,19 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
         SHParseDisplayName(L"C:\\", nullptr, &pidl, 0, nullptr);
         pEB->BrowseToIDList(pidl, SBSP_ABSOLUTE);
         CoTaskMemFree(pidl);
+
+        JSAtom atom = JS_NewAtom(ctx, "currentFolder");
+
+        JS_DefinePropertyGetSet(
+            ctx,
+            obj,
+            atom,
+            JS_NewCFunction(ctx, js_get_current_folder, "get", 0),
+            JS_UNDEFINED,
+            JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+        );
+
+        JS_FreeAtom(ctx, atom);
     }
     return obj;
 }
@@ -819,5 +916,201 @@ JSModuleDef* js_init_module_api(JSContext* ctx, const char* module_name)
     return m;
 }
 
+static CFolderItem* GetFolderItem(JSValueConst val)
+{
+    return (CFolderItem*)JS_GetOpaque(val, g_cfolderitem_class_id);
+}
+
+void cfolderitem_finalizer(JSRuntime* rt, JSValueConst val)
+{
+    CFolderItem* fi = (CFolderItem*)JS_GetOpaque(val, g_cfolderitem_class_id);
+
+    if (fi == nullptr) {
+        return;
+    }
+
+    SafeRelease(&fi->pItem);
+    delete fi;
+}
+
+static JSValue NewFolderItem(
+    JSContext* ctx,
+    IShellItem* pItem)
+{
+    if (pItem == nullptr) {
+        return JS_NULL;
+    }
+
+    JSValue obj = JS_NewObjectClass(ctx, g_cfolderitem_class_id);
+
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+
+    CFolderItem* fi = new CFolderItem();
+
+    if (pItem) {
+        pItem->QueryInterface(IID_PPV_ARGS(&fi->pItem));
+    }
+    JS_SetOpaque(obj, fi);
+
+    JSAtom atom = JS_NewAtom(ctx, "path");
+
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        atom,
+        JS_NewCFunction(ctx, js_folderitem_get_path, "get path", 0),
+        JS_UNDEFINED,
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+    );
+    JS_FreeAtom(ctx, atom);
+
+    return obj;
+}
+
+
+static JSValue js_FolderItem(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "path expected");
+    }
+
+    std::wstring path = JS_ToWideString(ctx, argv[0]);
+    if (path.empty()) {
+        return JS_EXCEPTION;
+    }
+
+    IShellItem* pItem = nullptr;
+
+    HRESULT hr = SHCreateItemFromParsingName(
+        path.c_str(),
+        nullptr,
+        IID_PPV_ARGS(&pItem));
+
+    if (FAILED(hr)) {
+        return JS_ThrowInternalError(
+            ctx,
+            "SHCreateItemFromParsingName failed");
+    }
+
+    JSValue obj = NewFolderItem(ctx, pItem);
+    pItem->Release();
+    return obj;
+}
+
+static JSValue js_folderitem_get_path(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItem* fi = GetFolderItem(this_val);
+
+    if (fi == nullptr || fi->pItem == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    PWSTR psz = nullptr;
+
+    HRESULT hr = fi->pItem->GetDisplayName(
+        SIGDN_DESKTOPABSOLUTEPARSING,
+        &psz);
+
+    if (FAILED(hr) || psz == nullptr) {
+        return JS_NULL;
+    }
+
+    JSValue ret = JS_NewString(ctx, WideToUtf8(psz).c_str());
+
+    CoTaskMemFree(psz);
+
+    return ret;
+}
+
+static JSValue js_folderitem_get_name(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItem* fi = GetFolderItem(this_val);
+
+    if (fi == nullptr || fi->pItem == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    PWSTR psz = nullptr;
+
+    HRESULT hr = fi->pItem->GetDisplayName(
+        SIGDN_NORMALDISPLAY,
+        &psz);
+
+    if (FAILED(hr) || psz == nullptr) {
+        return JS_NULL;
+    }
+
+    JSValue ret = JS_NewString(ctx, WideToUtf8(psz).c_str());
+
+    CoTaskMemFree(psz);
+
+    return ret;
+}
+
+static JSValue js_folderitem_get_isFolder(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItem* fi = GetFolderItem(this_val);
+
+    if (fi == nullptr || fi->pItem == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    SFGAOF attr = SFGAO_FOLDER;
+
+    HRESULT hr = fi->pItem->GetAttributes(
+        SFGAO_FOLDER,
+        &attr);
+
+    if (FAILED(hr)) {
+        return JS_FALSE;
+    }
+
+    return JS_NewBool(ctx, (attr & SFGAO_FOLDER) != 0);
+}
+
+static JSValue js_folderitem_parent(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItem* fi = GetFolderItem(this_val);
+
+    if (fi == nullptr || fi->pItem == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    IShellItem* pParent = nullptr;
+
+    HRESULT hr = fi->pItem->GetParent(&pParent);
+
+    if (FAILED(hr) || pParent == nullptr) {
+        return JS_NULL;
+    }
+
+    JSValue obj = NewFolderItem(ctx, pParent);
+
+    pParent->Release();
+
+    return obj;
+}
 
 #endif

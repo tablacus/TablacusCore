@@ -119,6 +119,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     class_def.finalizer = ui_element_finalizer;
     JS_NewClass(rt, g_class_id, &class_def);
 
+    JS_NewClassID(rt, &g_cfolderitem_class_id);
+    class_def.class_name = "FolderItem";
+    class_def.finalizer = cfolderitem_finalizer;
+    JS_NewClass(rt, g_cfolderitem_class_id, &class_def);
+
+
     // Register the module loader
     JS_SetModuleLoaderFunc(rt, nullptr, js_module_loader, nullptr);
 

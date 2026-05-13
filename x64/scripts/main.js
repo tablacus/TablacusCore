@@ -143,6 +143,9 @@ const exp = window.createElement("ExplorerBrowser", {
         mouseout: [
             (e) => { e.target.text = ["mouseOut", e.clientX, e.clientY, e.screenX, e.screenY].join(','); },
         ],
+        navigate: (e) => {
+            edit.text = e.target.currentFolder.path;
+        }
     }
 });
 
