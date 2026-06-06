@@ -13,9 +13,223 @@ static HWND g_hwndActiveMouse = nullptr;
 static POINT g_ptMouseDown = {};
 static HWND g_hwndHover = nullptr;
 static BOOL g_bInputChanged = FALSE;
+IQueryParser* g_pqp = NULL;
 
 UIElement* get_element(JSValueConst val) {
     return (UIElement*)JS_GetOpaque(val, g_class_id);
+}
+
+static void GetSearchArg(
+    std::wstring& out,
+    const std::wstring& path,
+    LPCWSTR pszArg) {
+    out.clear();
+
+    if (pszArg == nullptr) {
+        return;
+    }
+
+    // Find argument position
+    size_t pos =
+        path.find(pszArg);
+
+    if (pos == std::wstring::npos) {
+        return;
+    }
+
+    // Extract value part
+    out = path.substr(pos + lstrlenW(pszArg));
+
+    // Stop at next '&'
+    size_t amp =
+        out.find(L'&');
+
+    if (amp != std::wstring::npos) {
+        out = out.substr(0, amp);
+    }
+
+    // URL decode in-place
+    DWORD len = (DWORD)out.size();
+
+    UrlUnescapeW(out.data(), nullptr, &len, URL_UNESCAPE_INPLACE);
+
+    // Empty -> "*"
+    if (out.empty()) {
+        out = L"*";
+    }
+}
+
+static IShellItem* JS_ToShellItem(
+    JSContext* ctx,
+    JSValueConst val)
+{
+    {
+        CFolderItem* fi =
+            (CFolderItem*)JS_GetOpaque(
+                val,
+                g_cfolderitem_class_id);
+
+        if (fi != nullptr && fi->pItem != nullptr) {
+            fi->pItem->AddRef();
+            return fi->pItem;
+        }
+
+        if (JS_IsString(val)) {
+            std::wstring path = JS_ToWideString(ctx, val);
+            UnquotePath(path);
+            if (path.empty()) {
+                return nullptr;
+            }
+            IShellItem* pItem = nullptr;
+            if (teIsSearchFolder(path.c_str())) {
+                std::wstring path3;
+                GetSearchArg(path3, path, L"&crumb=location:");
+                ISearchFolderItemFactory* psfif = NULL;
+                if SUCCEEDED(CoCreateInstance(CLSID_SearchFolderItemFactory, NULL, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&psfif))) {
+                    IShellItem* psi = NULL;
+                    if SUCCEEDED(SHCreateItemFromParsingName(path3.c_str(), nullptr, IID_PPV_ARGS(&psi))) {
+                        IShellItemArray* psia;
+                        if SUCCEEDED(SHCreateShellItemArrayFromShellItem(psi, IID_PPV_ARGS(&psia))) {
+                            psfif->SetScope(psia);
+                            psia->Release();
+                            GetSearchArg(path3, path, L"crumb=");
+
+                            if (!g_pqp) {
+                                IQueryParserManager* pqpm = NULL;
+                                if SUCCEEDED(CoCreateInstance(__uuidof(QueryParserManager), NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pqpm))) {
+                                    if SUCCEEDED(pqpm->CreateLoadedParser(L"SystemIndex", MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), IID_PPV_ARGS(&g_pqp))) {
+                                        BOOL fUnderstandNQS = FALSE;
+                                        BOOL fAutoWildCard = TRUE;
+                                        HKEY hKey;
+                                        if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Search\\Preferences", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                                            DWORD dwSize = sizeof(BOOL);
+                                            RegQueryValueExA(hKey, "EnableNaturalQuerySyntax", NULL, NULL, (LPBYTE)&fUnderstandNQS, &dwSize);
+                                            RegQueryValueExA(hKey, "AutoWildCard", NULL, NULL, (LPBYTE)&fAutoWildCard, &dwSize);
+                                            RegCloseKey(hKey);
+                                        }
+                                        pqpm->InitializeOptions(fUnderstandNQS, fAutoWildCard, g_pqp);
+                                        pqpm->SetOption(QPMO_PRELOCALIZED_SCHEMA_BINARY_PATH, FALSE);
+                                        for (int i = 0; i < ARRAYSIZE(g_rgGenericProperties); ++i) {
+                                            PROPVARIANT propvar;
+                                            propvar.pwszVal = const_cast<LPWSTR>(g_rgGenericProperties[i].pszPropertyName);
+                                            propvar.vt = VT_LPWSTR;
+                                            g_pqp->SetMultiOption(SQMO_DEFAULT_PROPERTY, g_rgGenericProperties[i].pszSemanticType, &propvar);
+                                        }
+                                    }
+                                    pqpm->Release();
+                                }
+                            }
+                            if (g_pqp) {
+                                IQuerySolution* pqs = NULL;
+                                ICondition* pc, * pc1;
+                                if (SUCCEEDED(g_pqp->Parse(path3.c_str(), NULL, &pqs)) && SUCCEEDED(pqs->GetQuery(&pc, NULL))) {
+                                    SYSTEMTIME st;
+                                    GetLocalTime(&st);
+                                    IConditionFactory2* pcf2;
+                                    if SUCCEEDED(pqs->QueryInterface(IID_PPV_ARGS(&pcf2))) {
+                                        ICondition2* pc2;
+                                        if SUCCEEDED(pcf2->ResolveCondition(pc, SQRO_DEFAULT, &st, IID_PPV_ARGS(&pc2))) {
+                                            psfif->SetCondition(pc2);
+                                            pc2->Release();
+                                        }
+                                        pcf2->Release();
+                                    }
+                                    else if SUCCEEDED(pqs->Resolve(pc, SQRO_DONT_SPLIT_WORDS, &st, &pc1)) {
+                                        psfif->SetCondition(pc1);
+                                        pc1->Release();
+                                    }
+                                    else {
+                                        psfif->SetCondition(pc);
+                                    }
+                                    pc->Release();
+									LPITEMIDLIST pidl;
+                                    if SUCCEEDED(psfif->GetIDList(&pidl)) {
+										SHCreateItemFromIDList(pidl, IID_PPV_ARGS(&pItem));
+										CoTaskMemFree(pidl);
+                                    }
+                                }
+                                SafeRelease(&pqs);
+                            }
+                            SafeRelease(&psi);
+                        }
+                    }
+                    SafeRelease(&psfif);
+                }
+                return pItem;
+            }
+
+            HRESULT hr = SHCreateItemFromParsingName(
+                path.c_str(),
+                nullptr,
+                IID_PPV_ARGS(&pItem));
+
+            if (FAILED(hr)) {
+                return nullptr;
+            }
+
+            return pItem;
+        }
+
+        return nullptr;
+    }
+}
+
+static JSValue js_navigate(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    {
+        UIElement* el = get_element(this_val);
+
+        if (el == nullptr || el->pSink == nullptr || el->pSink->m_pEB == nullptr) {
+            return JS_EXCEPTION;
+        }
+
+        if (argc < 1) {
+            return JS_ThrowTypeError(
+                ctx,
+                "path or FolderItem expected");
+        }
+
+        IShellItem* pItem = JS_ToShellItem(ctx, argv[0]);
+
+        if (pItem == nullptr) {
+            return JS_ThrowTypeError(
+                ctx,
+                "invalid shell item");
+        }
+
+        PIDLIST_ABSOLUTE pidl = nullptr;
+
+        HRESULT hr = SHGetIDListFromObject(
+            pItem,
+            &pidl);
+
+        pItem->Release();
+
+        if (FAILED(hr) || pidl == nullptr)
+        {
+            return JS_ThrowInternalError(
+                ctx,
+                "SHGetIDListFromObject failed");
+        }
+
+        hr = el->pSink->m_pEB->BrowseToIDList(
+            pidl,
+            SBSP_ABSOLUTE);
+
+        CoTaskMemFree(pidl);
+
+        if (FAILED(hr)) {
+            return JS_ThrowInternalError(
+                ctx,
+                "BrowseToIDList failed");
+        }
+
+        return JS_UNDEFINED;
+    }
 }
 
 void ui_element_finalizer(JSRuntime* rt, JSValueConst val)
@@ -310,6 +524,7 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             GetClientRect(hwnd, &rc);
             el->pSink->m_pEB->SetRect(nullptr, rc);
         }
+        FireEvent(hwnd, "Resize", JS_UNDEFINED);
         break;
     }
     case WM_NCDESTROY:
@@ -508,13 +723,13 @@ JSValue js_get_current_folder(
         return JS_EXCEPTION;
     }
 
-    IShellItem* pItem = GetCurrentFolder(el->pSink->m_pEB);
-    if (pItem == nullptr) {
+    CFolderItem* fi = new CFolderItem();
+    fi->pItem = GetCurrentFolder(el->pSink->m_pEB);
+    if (fi->pItem == nullptr) {
+        delete fi;
         return JS_NULL;
     }
-    JSValue obj = NewFolderItem(ctx, pItem);
-    pItem->Release();
-    return obj;
+    return NewFolderItem(ctx, fi);
 }
 
 JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
@@ -658,8 +873,21 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
             JS_UNDEFINED,
             JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
         );
-
         JS_FreeAtom(ctx, atom);
+
+        // Method
+        JS_SetPropertyStr(
+            ctx,
+            obj,
+            "navigate",
+
+            JS_NewCFunction(
+                ctx,
+                js_navigate,
+                "navigate",
+                1
+            )
+        );
     }
     return obj;
 }
@@ -916,9 +1144,23 @@ JSModuleDef* js_init_module_api(JSContext* ctx, const char* module_name)
     return m;
 }
 
-static CFolderItem* GetFolderItem(JSValueConst val)
+static CFolderItem* GetPureFolderItem(JSValueConst val)
 {
     return (CFolderItem*)JS_GetOpaque(val, g_cfolderitem_class_id);
+}
+
+static CFolderItem* GetFolderItem(JSValueConst val)
+{
+    CFolderItem* fi = (CFolderItem*)JS_GetOpaque(val, g_cfolderitem_class_id);
+    if (!fi->pItem && !fi->utf8path.empty()) {
+        if SUCCEEDED(SHCreateItemFromParsingName(
+            Utf8ToWide(fi->utf8path.c_str()).c_str(),
+            nullptr,
+            IID_PPV_ARGS(&fi->pItem))) {
+            fi->utf8path = "";
+        }
+    }
+    return fi;
 }
 
 void cfolderitem_finalizer(JSRuntime* rt, JSValueConst val)
@@ -935,9 +1177,9 @@ void cfolderitem_finalizer(JSRuntime* rt, JSValueConst val)
 
 static JSValue NewFolderItem(
     JSContext* ctx,
-    IShellItem* pItem)
+    CFolderItem* fi)
 {
-    if (pItem == nullptr) {
+    if (fi == nullptr) {
         return JS_NULL;
     }
 
@@ -947,25 +1189,40 @@ static JSValue NewFolderItem(
         return obj;
     }
 
-    CFolderItem* fi = new CFolderItem();
-
-    if (pItem) {
-        pItem->QueryInterface(IID_PPV_ARGS(&fi->pItem));
-    }
     JS_SetOpaque(obj, fi);
 
-    JSAtom atom = JS_NewAtom(ctx, "path");
-
+    JSAtom atom = JS_NewAtom(ctx, "name");
     JS_DefinePropertyGetSet(
         ctx,
         obj,
         atom,
-        JS_NewCFunction(ctx, js_folderitem_get_path, "get path", 0),
+        JS_NewCFunction(ctx, js_folderitem_get_name, "get", 0),
         JS_UNDEFINED,
         JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
     );
     JS_FreeAtom(ctx, atom);
 
+    atom = JS_NewAtom(ctx, "path");
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        atom,
+        JS_NewCFunction(ctx, js_folderitem_get_path, "get", 0),
+        JS_UNDEFINED,
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+    );
+    JS_FreeAtom(ctx, atom);
+
+    atom = JS_NewAtom(ctx, "parsingPath");
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        atom,
+        JS_NewCFunction(ctx, js_folderitem_get_parsingPath, "get", 0),
+        JS_UNDEFINED,
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+    );
+    JS_FreeAtom(ctx, atom);
     return obj;
 }
 
@@ -979,28 +1236,20 @@ static JSValue js_FolderItem(
     if (argc < 1) {
         return JS_ThrowTypeError(ctx, "path expected");
     }
+    CFolderItem* fi = GetPureFolderItem(this_val);
+	if (fi) {
+		return JS_DupValue(ctx, this_val);
+    }
+   fi = new CFolderItem();
+    const char* str = JS_ToCString(ctx, argv[0]);
+	fi->utf8path = str ? str : "";
+    JS_FreeCString(ctx, str);
 
-    std::wstring path = JS_ToWideString(ctx, argv[0]);
-    if (path.empty()) {
+    if (fi->utf8path.empty()) {
         return JS_EXCEPTION;
     }
 
-    IShellItem* pItem = nullptr;
-
-    HRESULT hr = SHCreateItemFromParsingName(
-        path.c_str(),
-        nullptr,
-        IID_PPV_ARGS(&pItem));
-
-    if (FAILED(hr)) {
-        return JS_ThrowInternalError(
-            ctx,
-            "SHCreateItemFromParsingName failed");
-    }
-
-    JSValue obj = NewFolderItem(ctx, pItem);
-    pItem->Release();
-    return obj;
+    return NewFolderItem(ctx, fi);
 }
 
 static JSValue js_folderitem_get_path(
@@ -1009,16 +1258,22 @@ static JSValue js_folderitem_get_path(
     int argc,
     JSValueConst* argv)
 {
-    CFolderItem* fi = GetFolderItem(this_val);
+    CFolderItem* fi = GetPureFolderItem(this_val);
 
-    if (fi == nullptr || fi->pItem == nullptr) {
+    if (fi == nullptr) {
+        return JS_EXCEPTION;
+    }
+    if (!fi->utf8path.empty()) {
+        return JS_NewString(ctx, fi->utf8path.c_str());
+    }
+    if (fi->pItem == nullptr) {
         return JS_EXCEPTION;
     }
 
     PWSTR psz = nullptr;
 
     HRESULT hr = fi->pItem->GetDisplayName(
-        SIGDN_DESKTOPABSOLUTEPARSING,
+        SIGDN_DESKTOPABSOLUTEEDITING,
         &psz);
 
     if (FAILED(hr) || psz == nullptr) {
@@ -1032,15 +1287,57 @@ static JSValue js_folderitem_get_path(
     return ret;
 }
 
+static JSValue js_folderitem_get_parsingPath(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItem* fi = GetPureFolderItem(this_val);
+
+    if (fi == nullptr) {
+        return JS_EXCEPTION;
+    }
+    if (!fi->utf8path.empty()) {
+        return JS_NewString(ctx, fi->utf8path.c_str());
+    }
+    if (fi->pItem == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    PWSTR psz = nullptr;
+
+    HRESULT hr = fi->pItem->GetDisplayName(
+        SIGDN_DESKTOPABSOLUTEPARSING,
+        &psz);
+
+    if (FAILED(hr) || psz == nullptr) {
+        return JS_NULL;
+    }
+
+    JSValue ret =
+        JS_NewString(ctx, WideToUtf8(psz).c_str());
+
+    CoTaskMemFree(psz);
+
+    return ret;
+}
+
 static JSValue js_folderitem_get_name(
     JSContext* ctx,
     JSValueConst this_val,
     int argc,
     JSValueConst* argv)
 {
-    CFolderItem* fi = GetFolderItem(this_val);
+    CFolderItem* fi = GetPureFolderItem(this_val);
 
-    if (fi == nullptr || fi->pItem == nullptr) {
+    if (fi == nullptr) {
+        return JS_EXCEPTION;
+    }
+    if (!fi->utf8path.empty()) {
+        return JS_NewString(ctx, fi->utf8path.c_str());
+    }
+    if (fi->pItem == nullptr) {
         return JS_EXCEPTION;
     }
 
@@ -1055,7 +1352,6 @@ static JSValue js_folderitem_get_name(
     }
 
     JSValue ret = JS_NewString(ctx, WideToUtf8(psz).c_str());
-
     CoTaskMemFree(psz);
 
     return ret;
@@ -1069,7 +1365,10 @@ static JSValue js_folderitem_get_isFolder(
 {
     CFolderItem* fi = GetFolderItem(this_val);
 
-    if (fi == nullptr || fi->pItem == nullptr) {
+    if (fi == nullptr) {
+        return JS_EXCEPTION;
+    }
+    if (fi->pItem == nullptr) {
         return JS_EXCEPTION;
     }
 
@@ -1098,19 +1397,16 @@ static JSValue js_folderitem_parent(
         return JS_EXCEPTION;
     }
 
-    IShellItem* pParent = nullptr;
+    CFolderItem* fiParent = new CFolderItem();
 
-    HRESULT hr = fi->pItem->GetParent(&pParent);
+    HRESULT hr = fi->pItem->GetParent(&fiParent->pItem);
 
-    if (FAILED(hr) || pParent == nullptr) {
+    if (FAILED(hr) || fiParent->pItem == nullptr) {
+        delete fiParent;
         return JS_NULL;
     }
 
-    JSValue obj = NewFolderItem(ctx, pParent);
-
-    pParent->Release();
-
-    return obj;
+    return NewFolderItem(ctx, fiParent);
 }
 
 #endif
