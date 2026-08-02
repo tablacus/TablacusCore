@@ -10,9 +10,9 @@
 HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
+IWICImagingFactory* g_pWICFactory = nullptr;
 
 LPFNRegenerateUserEnvironment _RegenerateUserEnvironment = nullptr;
-
 
 extern HBRUSH	g_hbrDarkBackground;
 extern BOOL g_bDarkMode;
@@ -101,6 +101,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+    CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_pWICFactory));
+
     // Perform application initialization:
     if (!InitInstance (hInstance, nCmdShow)) {
 #ifdef _WINDLL
@@ -124,6 +126,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     class_def.finalizer = cfolderitem_finalizer;
     JS_NewClass(rt, g_cfolderitem_class_id, &class_def);
 
+    JS_NewClassID(rt, &g_image_class_id);
+    class_def.class_name = "Image";
+    class_def.finalizer = image_finalizer;
+    JS_NewClass(rt, g_image_class_id, &class_def);
 
     // Register the module loader
     JS_SetModuleLoaderFunc(rt, nullptr, js_module_loader, nullptr);
@@ -201,7 +207,7 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     wcex.hIcon          = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_TABLACUSCORE));
     wcex.hCursor        = LoadCursor(nullptr, IDC_ARROW);
     wcex.hbrBackground  = (HBRUSH)(COLOR_WINDOW+1);
-    wcex.lpszMenuName   = MAKEINTRESOURCEW(IDC_TABLACUSCORE);
+    wcex.lpszMenuName   = nullptr;
     wcex.lpszClassName  = szWindowClass;
     wcex.hIconSm        = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
 

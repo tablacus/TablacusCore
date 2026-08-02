@@ -1,5 +1,7 @@
 #include <windows.h>
 #include "common.h"
+#include "api.h"
+
 #if defined(_WINDLL) || defined(_DEBUG)
 
 int		g_nException = 256;
@@ -8,8 +10,53 @@ HBRUSH	g_hbrDarkBackground = nullptr;
 OPENFILENAME* g_pofn = nullptr;
 std::vector<HMODULE>	g_phModule;
 BOOL g_bDarkMode = FALSE;
+DWORD	g_dwMainThreadId;
 
 extern std::unordered_map<DWORD, HHOOK> g_umCBTHook;
+extern JSClassID g_image_class_id;
+extern IWICImagingFactory* g_pWICFactory;
+
+LONGLONG teGetStreamPos(IStream* pStream)
+{
+    ULARGE_INTEGER uliPos;
+    LARGE_INTEGER liOffset;
+    liOffset.QuadPart = 0;
+    pStream->Seek(liOffset, STREAM_SEEK_CUR, &uliPos);
+    return uliPos.QuadPart;
+}
+
+VOID teCopyStream(IStream* pSrc, IStream* pDst)
+{
+    LARGE_INTEGER liOffset;
+    liOffset.QuadPart = 0;
+    LARGE_INTEGER liSrc, liDst;
+    liSrc.QuadPart = teGetStreamPos(pSrc);
+    liDst.QuadPart = teGetStreamPos(pDst);
+    pSrc->Seek(liOffset, STREAM_SEEK_SET, NULL);
+    pDst->Seek(liOffset, STREAM_SEEK_SET, NULL);
+    ULONG cbRead;
+    BYTE pszData[SIZE_BUFF];
+    while (SUCCEEDED(pSrc->Read(pszData, SIZE_BUFF, &cbRead)) && cbRead) {
+        pDst->Write(pszData, cbRead, NULL);
+    }
+    pSrc->Seek(liSrc, STREAM_SEEK_SET, NULL);
+    pDst->Seek(liDst, STREAM_SEEK_SET, NULL);
+}
+
+static void TrimString(std::wstring& s)
+{
+    size_t start = 0;
+
+    while (start < s.size() && iswspace(s[start])) {
+        start++;
+    }
+    size_t end = s.size();
+
+    while (end > start && iswspace(s[end - 1])) {
+        end--;
+    }
+    s = s.substr(start, end - start);
+}
 
 VOID teAdvise(IUnknown* punk, IID diid, IUnknown* punk2, PDWORD pdwCookie)
 {
@@ -290,26 +337,73 @@ uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
 BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
 {
     auto* el = GetUIElement(hwnd);
+
     if (!el) {
         return FALSE;
     }
+
+    JSContext* ctx = el->ctx;
+
     if (JS_IsUndefined(e)) {
-        e = JS_NewObject(el->ctx);
+        e = JS_NewObject(ctx);
     }
+
     if (JS_IsObject(e)) {
-        JS_SetPropertyStr(el->ctx, e, "target", el->jsThis);
-        JS_SetPropertyStr(el->ctx, e, "type", JS_NewString(el->ctx, name));
+        JS_SetPropertyStr(ctx, e, "target", JS_DupValue(ctx, el->jsThis));
+        JS_SetPropertyStr(ctx, e,  "type", JS_NewString(ctx, name));
     }
-    auto it = el->events.map.find(name);
-    if (it == el->events.map.end()) {
+
+    JSValue listeners = JS_GetPropertyStr(ctx, el->jsThis, "listeners");
+
+    if (!JS_IsObject(listeners)) {
+        JS_FreeValue(ctx, listeners);
+        JS_FreeValue(ctx, e);
         return FALSE;
     }
-    for (auto& fn : it->second) {
-        JSValue result = JS_Call(el->ctx, fn, el->jsThis, 1, &e);
-		if (!JS_IsUndefined(result)) {
-            return !JS_ToBool(el->ctx, result);
+
+    JSValue handlers = JS_GetPropertyStr(ctx, listeners, name);
+    JS_FreeValue(ctx, listeners);
+
+    // click: function() {}
+    if (JS_IsFunction(ctx, handlers)) {
+        JSValue result = JS_Call(ctx, handlers, el->jsThis, 1, &e);
+        JS_FreeValue(ctx, handlers);
+
+        if (!JS_IsUndefined(result)) {
+            BOOL b = !JS_ToBool(ctx, result);
+            JS_FreeValue(ctx, result);
+            JS_FreeValue(ctx, e);
+            return b;
+        }
+        JS_FreeValue(ctx, result);
+        JS_FreeValue(ctx, e);
+        return FALSE;
+    }
+
+    // click: [fn1, fn2, ...]
+    if (JS_IsArray(handlers)) {
+        uint32_t len = JS_GetArrayLength( ctx, handlers);
+        for (uint32_t i = 0; i < len; i++) {
+            JSValue fn = JS_GetPropertyUint32(ctx, handlers, i);
+            if (JS_IsFunction(ctx, fn)) {
+                JSValue result = JS_Call(ctx, fn, el->jsThis, 1, &e);
+                JS_FreeValue(ctx, fn);
+
+                if (!JS_IsUndefined(result)) {
+                    BOOL b =!JS_ToBool(ctx, result);
+                    JS_FreeValue(ctx, result);
+                    JS_FreeValue(ctx, handlers);
+                    JS_FreeValue(ctx, e);
+                    return b;
+                }
+                JS_FreeValue(ctx, result);
+            } else {
+                JS_FreeValue(ctx, fn);
+            }
         }
     }
+    JS_FreeValue(ctx, handlers);
+    JS_FreeValue(ctx, e);
     return FALSE;
 }
 
@@ -393,15 +487,123 @@ BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPAR
     return FireEvent(hwnd, name, e);
 }
 
+BOOL teStartsText(LPCWSTR pszSub, LPCWSTR pszFile)
+{
+    BOOL bResult = pszFile ? TRUE : FALSE;
+    WCHAR wc;
+    while (bResult && (wc = *pszSub++)) {
+        bResult = towlower(wc) == towlower(*pszFile++);
+    }
+    return bResult;
+}
+
+BOOL tePathMatchSpec1(LPCWSTR pszFile, LPCWSTR pszSpec, WCHAR wSpecEnd)
+{
+    WCHAR wc = *pszSpec;
+    if (wc == wSpecEnd) {
+        return !*pszFile;
+    }
+    if (!*pszFile && wc != '*') {
+        return FALSE;
+    }
+    for (; *pszFile; ++pszFile) {
+        wc = *pszSpec++;
+        if (wc == '*') {
+            wc = towlower(*pszSpec++);
+            if (wc == wSpecEnd) {
+                return TRUE;
+            }
+            do {
+                if (!*pszFile) {
+                    return FALSE;
+                }
+                if (wc != '*' && wc != '?') {
+                    while (towlower(*pszFile) != wc) {
+                        if (!*(++pszFile)) {
+                            return FALSE;
+                        }
+                    }
+                }
+            } while (!tePathMatchSpec1(++pszFile, pszSpec, wSpecEnd));
+            return TRUE;
+        }
+        if (wc != '?') {
+            if (wc == wSpecEnd || towlower(*pszFile) != towlower(wc)) {
+                return FALSE;
+            }
+        }
+    }
+    for (; (wc = *pszSpec) == '*'; pszSpec++);
+    return *pszFile == (wc == wSpecEnd ? NULL : wc);
+}
+
+BOOL tePathMatchSpec(LPCWSTR pszFile, LPCWSTR pszSpec)
+{
+    LPWSTR pszSpecEnd;
+    if (!pszSpec || !pszSpec[0]) {
+        return TRUE;
+    }
+    if (!pszFile) {
+        return FALSE;
+    }
+    do {
+        pszSpecEnd = StrChr(pszSpec, ';');
+#ifdef USE_TESTPATHMATCHSPEC
+        BOOL b1 = !!tePathMatchSpec1(pszFile, pszSpec, pszSpecEnd ? ';' : NULL);
+        BOOL b2 = !!tePathMatchSpec2(pszFile, pszSpec);
+        if (b1 != b2) {
+            b2 = !!tePathMatchSpec1(pszFile, pszSpec, pszSpecEnd ? ';' : NULL);
+        }
+#endif
+        if (tePathMatchSpec1(pszFile, pszSpec, pszSpecEnd ? ';' : NULL)) {
+            return TRUE;
+        }
+        pszSpec = pszSpecEnd + 1;
+    } while (pszSpecEnd);
+    return FALSE;
+}
+
+BOOL teIsFileSystem(LPOLESTR pszPath)
+{
+    return tePathMatchSpec(pszPath, L"?:\\*;\\\\*\\*") && !teStartsText(L"\\\\\\", pszPath);
+}
+
+BOOL teIsSearchFolder(LPCWSTR lpszPath)
+{
+    return teStartsText(L"search-ms:", lpszPath);
+}
+
+void UnquotePath(std::wstring& path)
+{
+	{
+		// Remove leading/trailing spaces
+		TrimString(path);
+
+		// Remove surrounding quotes
+		if (path.size() >= 2 &&
+			path.front() == L'"' &&
+			path.back() == L'"')
+		{
+			path =
+				path.substr(1, path.size() - 2);
+
+			// Trim again after unquoting
+			TrimString(path);
+		}
+	}
+}
+
+
+
 CBrowserSink::CBrowserSink(HWND hwnd)
 {
-    refCount = 1;
-    m_hwnd = hwnd;
-    m_hwndDT = NULL;
-    m_hwndDV = NULL;
-    m_hwndLV = NULL;
+	refCount = 1;
+	m_hwnd = hwnd;
+	m_hwndDT = NULL;
+	m_hwndDV = NULL;
+	m_hwndLV = NULL;
 	m_pSV = nullptr;
-    m_pdisp = nullptr;
+	m_pdisp = nullptr;
 }
 
 CBrowserSink::~CBrowserSink()
@@ -570,6 +772,168 @@ VOID CBrowserSink::GetShellFolderView()
     } else {
         m_pdisp = NULL;
     }
+}
+
+// CImage
+
+UINT CImage::GetWidth() const
+{
+    UINT cx = 0;
+
+    if (m_pBitmap) {
+        m_pBitmap->GetSize(&cx, nullptr);
+    }
+
+    return cx;
+}
+
+UINT CImage::GetHeight() const
+{
+    UINT cy = 0;
+
+    if (m_pBitmap) {
+        m_pBitmap->GetSize(nullptr, &cy);
+    }
+
+    return cy;
+}
+
+HRESULT CImage::LoadFromStream(IStream* pStream, UINT uFrame, BOOL bKeepStream) {
+    frame = uFrame;
+
+    LARGE_INTEGER li = {};
+    pStream->Seek(li, SEEK_SET, nullptr);
+
+    ComPtr<IWICBitmapDecoder> decoder;
+
+    HRESULT hr = g_pWICFactory->CreateDecoderFromStream(pStream, nullptr, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    decoder->GetFrameCount(&frameCount);
+
+    if (frameCount == 0) {
+        return E_FAIL;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frameDecode;
+
+    hr = decoder->GetFrame(uFrame, &frameDecode);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    m_pBitmap.Reset();
+
+    hr = g_pWICFactory->CreateBitmapFromSource(frameDecode.Get(), WICBitmapCacheOnDemand, &m_pBitmap);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    ComPtr<IWICMetadataQueryReader> metadata;
+
+    hr = frameDecode->GetMetadataQueryReader(&metadata);
+    if (SUCCEEDED(hr) && metadata) {
+        PROPVARIANT propVar;
+
+        PropVariantInit(&propVar);
+
+        if (SUCCEEDED(metadata->GetMetadataByName(L"/app1/ifd/{ushort=274}", &propVar))) {
+            VARIANT v;
+
+            VariantInit(&v);
+/*          I'll do it later
+            if (SUCCEEDED(PropVariantToVariant(&propVar, &v))) {
+                int i = GetIntFromVariantClear(&v);
+
+                if (i > 1 && i < 9) {
+                    static const int r[] = { 0, 0, 8, 2, 10, 11, 1, 9, 3 };
+
+                    //RotateFlip(r[i], FALSE);
+                }
+            }
+            */
+            PropVariantClear(&propVar);
+        }
+    }
+
+    if (bKeepStream || frameCount > 1 || g_dwMainThreadId != GetCurrentThreadId()) {
+        m_pStream.Attach(SHCreateMemStream(nullptr, 0));
+
+        if (m_pStream) {
+            teCopyStream(pStream, m_pStream.Get());
+            decoder->GetContainerFormat(&sourceFormat);
+        }
+    }
+
+    return S_OK;
+}
+
+HRESULT CImage::LoadFromFile(LPCWSTR pszPath) {
+    ComPtr<IStream> stm;
+
+    HRESULT hr = SHCreateStreamOnFileEx(
+        pszPath,
+        STGM_READ | STGM_SHARE_DENY_NONE,
+        FILE_ATTRIBUTE_NORMAL,
+        FALSE,
+        nullptr,
+        &stm);
+
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    return LoadFromStream(stm.Get(), 0, FALSE);
+}
+
+static JSValue CreateImageObject(
+    JSContext* ctx,
+    CImage* pImage)
+{
+    JSValue obj =
+        JS_NewObjectClass(
+            ctx,
+            g_image_class_id);
+
+    JS_SetOpaque(
+        obj,
+        pImage);
+
+    return obj;
+}
+
+// Not static: declared in api.h so it can be called from api.cpp
+JSValue Image_fromFile(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    WStrNullable path;
+
+    JS_ToWStrNullable(
+        ctx,
+        argv[0],
+        path);
+
+    if (!path.ptr) {
+        return JS_EXCEPTION;
+    }
+
+    auto* img = new CImage();
+
+    HRESULT hr = img->LoadFromFile(path.ptr);
+
+    if (FAILED(hr)) {
+        delete img;
+        return JS_NULL;
+    }
+
+    return CreateImageObject(
+        ctx,
+        img);
 }
 
 #endif

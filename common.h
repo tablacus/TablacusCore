@@ -12,8 +12,16 @@
 #include <shobjidl.h>
 #include <pathcch.h>
 #include <CommCtrl.h>
+#include <commoncontrols.h>
 #include <shdispid.h>
 #include <shlwapi.h>
+#include <shared_mutex>
+#include <structuredquery.h>
+#include <propkey.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
+using Microsoft::WRL::ComPtr;
 #pragma warning(push)
 #pragma warning(disable: 4244)
 #include "quickjs.h"
@@ -26,6 +34,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "Pathcch.lib")
+#pragma comment(lib, "propsys.lib")
 
 #define WINDOW_CLASS			L"TablacusExplorerLite"
 #define WINDOW_CLASS2			L"TablacusExplorerLite2"
@@ -42,21 +51,18 @@
 #define SHGDN_FORPARSINGEX	0x80000000
 
 #define MAX_PATHEX 32768
-
-std::wstring Utf8ToWide(const char* utf8);
-std::string  WideToUtf8(const wchar_t* wide);
-std::string LoadFile(const wchar_t* path);
-
-VOID FreeBSTR(BSTR* bstr);
+#define SIZE_BUFF				32768
 
 struct WStrNullable {
     std::wstring storage;
     LPCWSTR ptr = nullptr;
 };
 
-struct EventMap {
-    std::unordered_map<std::string, std::vector<JSValue>> map;
-};
+std::wstring Utf8ToWide(const char* utf8);
+std::string  WideToUtf8(const wchar_t* wide);
+std::string LoadFile(const wchar_t* path);
+
+VOID FreeBSTR(BSTR* bstr);
 
 class CBrowserSink : public IExplorerBrowserEvents, public IDispatch
 {
@@ -95,7 +101,6 @@ public:
 };
 
 struct UIElement  {
-    EventMap events;
     JSContext* ctx;
     JSValue jsThis;
     HWND hwnd;
@@ -103,6 +108,27 @@ struct UIElement  {
     // --- ExplorerBrowser ---
     CBrowserSink *pSink;
     //    BOOL defaultPrevented;
+};
+
+class CImage
+{
+public:
+    CImage() = default;
+    ~CImage() = default;
+
+    HRESULT LoadFromStream(IStream* pStream, UINT uFrame, BOOL bKeepStream);
+    HRESULT LoadFromFile(LPCWSTR pszPath);
+
+    ComPtr<IWICBitmap> m_pBitmap;
+    ComPtr<IStream> m_pStream;
+
+    UINT frame = 0;
+    UINT frameCount = 1;
+
+    GUID sourceFormat = GUID_NULL;
+
+    UINT GetWidth() const;
+    UINT GetHeight() const;
 };
 
 bool JS_ToWStrNullable(JSContext* ctx, JSValueConst val, WStrNullable& out);
@@ -123,6 +149,8 @@ BOOL FireEvent(HWND hwnd, const char* name, JSValue e);
 BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk);
 BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam);
 std::wstring JS_ToWideString(JSContext* ctx, JSValueConst val);
+BOOL teIsSearchFolder(LPCWSTR lpszPath);
+void UnquotePath(std::wstring& path);
 
 #if !defined(_WINDLL) && !defined(_DEBUG)
 #pragma comment(linker, "/entry:\"wWinMain\"")

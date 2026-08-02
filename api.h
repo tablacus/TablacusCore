@@ -33,6 +33,15 @@ JSModuleDef* js_init_module_api(JSContext* ctx, const char* module_name);
 LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 void ui_element_finalizer(JSRuntime* rt, JSValueConst val);
 void cfolderitem_finalizer(JSRuntime* rt, JSValueConst val);
+void image_finalizer(JSRuntime* rt, JSValueConst val);
+
+// Defined in common.cpp; not static so it can be used as the Image.fromFile() implementation
+JSValue Image_fromFile(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv);
+
 static JSValue js_folderitem_get_name(
     JSContext* ctx,
     JSValueConst this_val,

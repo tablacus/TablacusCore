@@ -161,6 +161,113 @@ VOID teFixGroup(LPNMLVCUSTOMDRAW lplvcd, COLORREF clrBk)
 	}
 }
 
+LRESULT CALLBACK TEToolBarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+	if (g_bDarkMode) {
+		switch (msg) {
+		case WM_ERASEBKGND:
+		{
+			RECT rc;
+			GetClientRect(hwnd, &rc);
+			FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
+			return 1;
+		}
+		case WM_PAINT:
+		{
+			// 1. Let the toolbar draw normally first
+			DefSubclassProc(hwnd, msg, wParam, lParam);
+
+			// 2. Post-paint: walk all buttons and repaint with dark colors
+			HDC hdc = GetDC(hwnd);
+			if (!hdc) return 0;
+
+			int count = (int)SendMessage(hwnd, TB_BUTTONCOUNT, 0, 0);
+			for (int i = 0; i < count; i++) {
+				TBBUTTON tbb{};
+				SendMessage(hwnd, TB_GETBUTTON, i, (LPARAM)&tbb);
+				if (!(tbb.fsState & TBSTATE_ENABLED) && (tbb.fsStyle & TBSTYLE_SEP))
+					continue; // skip hidden separators
+
+				RECT rc{};
+				SendMessage(hwnd, TB_GETITEMRECT, i, (LPARAM)&rc);
+
+				// Determine state
+				bool hot     = (tbb.fsState & TBSTATE_PRESSED) != 0
+				            || SendMessage(hwnd, TB_GETHOTITEM, 0, 0) == i;
+				bool checked = (tbb.fsState & TBSTATE_CHECKED) != 0;
+
+				COLORREF bgColor = TECL_DARKBG;
+				if (hot)    bgColor = 0x404040;
+				if (checked) bgColor = TECL_DARKSEL;
+
+				if (tbb.fsStyle & TBSTYLE_SEP) {
+					// Repaint separator background
+					SetDCBrushColor(hdc, TECL_DARKBG);
+					FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
+					// Draw dim vertical line
+					RECT rcLine = rc;
+					rcLine.left  = rc.left + (rc.right - rc.left) / 2 - 1;
+					rcLine.right = rcLine.left + 1;
+					InflateRect(&rcLine, 0, -3);
+					SetDCBrushColor(hdc, 0x555555);
+					FillRect(hdc, &rcLine, GetStockBrush(DC_BRUSH));
+					continue;
+				}
+
+				if (bgColor == TECL_DARKBG) continue; // nothing to override
+
+				// Repaint button background with dark color
+				SetDCBrushColor(hdc, bgColor);
+				FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
+
+				// Redraw icon
+				int imgIdx = tbb.iBitmap;
+				HIMAGELIST hIL = (HIMAGELIST)SendMessage(hwnd, TB_GETIMAGELIST, 0, 0);
+				if (hIL && imgIdx >= 0) {
+					int cx = 16, cy = 16;
+					ImageList_GetIconSize(hIL, &cx, &cy);
+					int x = rc.left + (rc.right - rc.left - cx) / 2;
+					int y = rc.top  + (rc.bottom - rc.top  - cy) / 2;
+					// If text is present, shift icon left
+					if (tbb.iString >= 0) {
+						x = rc.left + 4;
+					}
+					ImageList_Draw(hIL, imgIdx, hdc, x, y, ILD_TRANSPARENT);
+				}
+
+				// Redraw text
+				if (tbb.iString >= 0) {
+					WCHAR buf[256]{};
+					SendMessage(hwnd, TB_GETBUTTONTEXT, tbb.idCommand, (LPARAM)buf);
+					if (buf[0]) {
+						SetBkMode(hdc, TRANSPARENT);
+						SetTextColor(hdc, TECL_DARKTEXT);
+						HFONT hFont = (HFONT)SendMessage(hwnd, WM_GETFONT, 0, 0);
+						HFONT hOld  = (HFONT)SelectObject(hdc, hFont);
+						RECT rcText = rc;
+						// offset text right of icon if icon present
+						if (imgIdx >= 0) {
+							int cx = 16;
+							ImageList_GetIconSize(
+								(HIMAGELIST)SendMessage(hwnd, TB_GETIMAGELIST, 0, 0),
+								&cx, nullptr);
+							rcText.left += 4 + cx + 2;
+						}
+						DrawTextW(hdc, buf, -1, &rcText,
+							DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+						SelectObject(hdc, hOld);
+					}
+				}
+			}
+
+			ReleaseDC(hwnd, hdc);
+			return 0;
+		}
+		}
+	}
+	return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
 LRESULT CALLBACK TEDlgLVProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	try {
@@ -380,6 +487,20 @@ VOID FixChild(HWND hwnd, HWND hwnd1) {
 			ListView_SetSelectedColumn(hwnd1, -1);
 		}
 	}
+	else if (::PathMatchSpecA(pszClassA, TOOLBARCLASSNAMEA)) {
+		::SetWindowTheme(hwnd1,
+			g_bDarkMode ? L"DarkMode_Navigator" : nullptr, nullptr);
+		if (_AllowDarkModeForWindow) {
+			_AllowDarkModeForWindow(hwnd1, g_bDarkMode);
+		}
+		// Subclass to handle WM_ERASEBKGND for dark background
+		auto itr = g_umDlgProc.find(hwnd1);
+		if (itr == g_umDlgProc.end()) {
+			SetWindowSubclass(hwnd1, TEToolBarProc, (UINT_PTR)TEToolBarProc, 0);
+			g_umDlgProc[hwnd1] = hwnd;
+		}
+		::InvalidateRect(hwnd1, nullptr, TRUE);
+	}
 	else if (::PathMatchSpecA(pszClassA, WC_TABCONTROLA)) {
 		if (!(GetWindowLong(hwnd1, GWL_STYLE) & TCS_OWNERDRAWFIXED)) {
 			if (g_bDarkMode) {
@@ -503,6 +624,74 @@ LRESULT DarkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case WM_NOTIFY:
 			LPNMHDR lpnmhdr;
 			lpnmhdr = (LPNMHDR)lParam;
+
+			// ToolBar dark mode custom draw
+			if (lpnmhdr->code == NM_CUSTOMDRAW && g_bDarkMode) {
+				CHAR cls[64]{};
+				GetClassNameA(lpnmhdr->hwndFrom, cls, 64);
+				if (PathMatchSpecA(cls, TOOLBARCLASSNAMEA)) {
+					LPNMTBCUSTOMDRAW pcd = (LPNMTBCUSTOMDRAW)lParam;
+					switch (pcd->nmcd.dwDrawStage) {
+					case CDDS_PREPAINT:
+					{
+						// Paint entire toolbar background first
+						RECT rcAll;
+						GetClientRect(lpnmhdr->hwndFrom, &rcAll);
+						FillRect(pcd->nmcd.hdc, &rcAll, g_hbrDarkBackground);
+						return CDRF_NOTIFYITEMDRAW;
+					}
+					case CDDS_ITEMPREPAINT:
+					{
+						HDC  hdc = pcd->nmcd.hdc;
+						RECT rc  = pcd->nmcd.rc;
+						UINT state   = pcd->nmcd.uItemState;
+						bool hot     = (state & CDIS_HOT) != 0;
+						bool pressed = (state & CDIS_SELECTED) != 0;
+						bool checked = (state & CDIS_CHECKED) != 0;
+
+						COLORREF bgColor = TECL_DARKBG;
+						if (hot || pressed)
+							// hot-track and TB_PRESSBUTTON both use highlight color
+							bgColor = 0x404040;
+						else if (checked)
+							bgColor = TECL_DARKSEL;
+
+						// Always repaint background (separator included)
+						SetDCBrushColor(hdc, bgColor);
+						FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
+
+						// For separators, draw a subtle line and skip text/icon drawing
+						TBBUTTON tbb{};
+						int idx = (int)SendMessage(lpnmhdr->hwndFrom,
+							TB_COMMANDTOINDEX, pcd->nmcd.dwItemSpec, 0);
+						SendMessage(lpnmhdr->hwndFrom, TB_GETBUTTON, idx, (LPARAM)&tbb);
+						if (tbb.fsStyle & TBSTYLE_SEP) {
+							// Draw a dim vertical separator line
+							RECT rcLine = rc;
+							rcLine.left  = rc.left + (rc.right - rc.left) / 2 - 1;
+							rcLine.right = rcLine.left + 1;
+							InflateRect(&rcLine, 0, -3);
+							SetDCBrushColor(hdc, 0x555555);
+							FillRect(hdc, &rcLine, GetStockBrush(DC_BRUSH));
+							return CDRF_SKIPDEFAULT;
+						}
+
+						SetBkMode(hdc, TRANSPARENT);
+						SetTextColor(hdc, TECL_DARKTEXT);
+
+						pcd->clrText              = TECL_DARKTEXT;
+						pcd->clrTextHighlight     = TECL_DARKTEXT;
+						pcd->clrBtnFace           = bgColor;
+						pcd->clrBtnHighlight      = bgColor;
+						pcd->clrHighlightHotTrack = 0x404040;
+						// TBCDRF_HILITEHOTTRACK: use clrHighlightHotTrack for hot state
+						return TBCDRF_USECDCOLORS | TBCDRF_HILITEHOTTRACK;
+					}
+					}
+					return CDRF_DODEFAULT;
+				}
+			}
+
 			if (lpnmhdr->code == NM_CUSTOMDRAW) {
 				LPNMLVCUSTOMDRAW lplvcd = (LPNMLVCUSTOMDRAW)lParam;
 				teFixGroup(lplvcd, TECL_DARKBG);
