@@ -969,7 +969,8 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
         std::wstring placeholder = js_read_string(ctx, opts, "placeholder", L"");
         SendMessage(hwnd, EM_SETCUEBANNER, TRUE, (LPARAM)placeholder.c_str());
     }
-    else if (lstrcmpi(type.c_str(), L"STATIC") == 0) {
+    else if (lstrcmpi(type.c_str(), L"STATIC") == 0 ||
+             lstrcmpi(type.c_str(), L"PANEL") == 0) {
         // Use a custom window class instead of "STATIC" so that WM_PAINT
         // is delivered to ControlProc and JS paint handlers work correctly.
         hwnd = CreateWindowExW(
@@ -1396,6 +1397,282 @@ static void JSToRect(JSContext* ctx, JSValueConst obj, RECT& rc)
     v = JS_GetPropertyStr(ctx, obj, "bottom"); JS_ToInt32(ctx, &n, v); rc.bottom = n; JS_FreeValue(ctx, v);
 }
 
+// ─── GDI helpers for custom tab drawing ──────────────────────────────────
+
+// api.ImageList_Draw({ imageList, index, hdc, x, y, flags? })
+static JSValue js_ImageList_Draw(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    JSValue opts = argv[0];
+    JSValue ilJS = JS_GetPropertyStr(ctx, opts, "imageList");
+    CImageList* il = static_cast<CImageList*>(JS_GetOpaque(ilJS, g_imagelist_class_id));
+    JS_FreeValue(ctx, ilJS);
+    if (!il || !il->hIL) return JS_NewBool(ctx, 0);
+
+    int64_t hdc = 0;
+    JSValue hdcJS = JS_GetPropertyStr(ctx, opts, "hdc");
+    JS_ToInt64Ex(ctx, &hdc, hdcJS); JS_FreeValue(ctx, hdcJS);
+
+    int32_t index=0, x=0, y=0, flags=ILD_TRANSPARENT;
+    JSValue v;
+    v = JS_GetPropertyStr(ctx, opts, "index"); JS_ToInt32(ctx, &index, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, opts, "x");     JS_ToInt32(ctx, &x,     v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, opts, "y");     JS_ToInt32(ctx, &y,     v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, opts, "flags");
+    if (!JS_IsUndefined(v)) JS_ToInt32(ctx, &flags, v);
+    JS_FreeValue(ctx, v);
+
+    return JS_NewBool(ctx, ImageList_Draw(il->hIL, index, (HDC)hdc, x, y, (UINT)flags));
+}
+
+// api.GetTextExtent({ hdc, text }) -> { width, height }
+static JSValue js_GetTextExtent(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    JSValue opts = argv[0];
+    int64_t hdc = 0;
+    JSValue hdcJS = JS_GetPropertyStr(ctx, opts, "hdc");
+    JS_ToInt64Ex(ctx, &hdc, hdcJS); JS_FreeValue(ctx, hdcJS);
+
+    JSValue txtJS = JS_GetPropertyStr(ctx, opts, "text");
+    const char* utf8 = JS_ToCString(ctx, txtJS);
+    std::wstring text = utf8 ? Utf8ToWide(utf8) : std::wstring();
+    JS_FreeCString(ctx, utf8); JS_FreeValue(ctx, txtJS);
+
+    SIZE sz{};
+    GetTextExtentPoint32W((HDC)hdc, text.c_str(), (int)text.size(), &sz);
+
+    JSValue result = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, result, "width",  JS_NewInt32(ctx, sz.cx));
+    JS_SetPropertyStr(ctx, result, "height", JS_NewInt32(ctx, sz.cy));
+    return result;
+}
+
+// api.SetTextColor(hdc, color) -> previous color
+static JSValue js_SetTextColor(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0; JS_ToInt64Ex(ctx, &hdc, argv[0]);
+    int32_t color = 0; JS_ToInt32(ctx, &color, argv[1]);
+    return JS_NewInt32(ctx, (int32_t)SetTextColor((HDC)hdc, (COLORREF)color));
+}
+
+// api.SetBkMode(hdc, mode) -> previous mode
+static JSValue js_SetBkMode(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0; JS_ToInt64Ex(ctx, &hdc, argv[0]);
+    int32_t mode = TRANSPARENT; JS_ToInt32(ctx, &mode, argv[1]);
+    return JS_NewInt32(ctx, SetBkMode((HDC)hdc, mode));
+}
+
+// api.FillRect({ hdc, rc, color })
+static JSValue js_FillRect(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    JSValue opts = argv[0];
+    int64_t hdc = 0;
+    JSValue hdcJS = JS_GetPropertyStr(ctx, opts, "hdc");
+    JS_ToInt64Ex(ctx, &hdc, hdcJS); JS_FreeValue(ctx, hdcJS);
+
+    RECT rc{};
+    JSValue rcJS = JS_GetPropertyStr(ctx, opts, "rc");
+    JSToRect(ctx, rcJS, rc); JS_FreeValue(ctx, rcJS);
+
+    int32_t color = 0;
+    JSValue clJS = JS_GetPropertyStr(ctx, opts, "color");
+    JS_ToInt32(ctx, &color, clJS); JS_FreeValue(ctx, clJS);
+
+    HBRUSH hbr = CreateSolidBrush((COLORREF)color);
+    FillRect((HDC)hdc, &rc, hbr);
+    DeleteObject(hbr);
+    return JS_UNDEFINED;
+}
+
+// api.DrawLine({ hdc, x1, y1, x2, y2, color })
+static JSValue js_DrawLine(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    JSValue opts = argv[0];
+    int64_t hdc = 0;
+    JSValue hdcJS = JS_GetPropertyStr(ctx, opts, "hdc");
+    JS_ToInt64Ex(ctx, &hdc, hdcJS); JS_FreeValue(ctx, hdcJS);
+
+    int32_t x1=0,y1=0,x2=0,y2=0,color=0x000000;
+    JSValue v;
+    v = JS_GetPropertyStr(ctx, opts, "x1");    JS_ToInt32(ctx,&x1,v);    JS_FreeValue(ctx,v);
+    v = JS_GetPropertyStr(ctx, opts, "y1");    JS_ToInt32(ctx,&y1,v);    JS_FreeValue(ctx,v);
+    v = JS_GetPropertyStr(ctx, opts, "x2");    JS_ToInt32(ctx,&x2,v);    JS_FreeValue(ctx,v);
+    v = JS_GetPropertyStr(ctx, opts, "y2");    JS_ToInt32(ctx,&y2,v);    JS_FreeValue(ctx,v);
+    v = JS_GetPropertyStr(ctx, opts, "color"); JS_ToInt32(ctx,&color,v); JS_FreeValue(ctx,v);
+
+    HPEN hpen = CreatePen(PS_SOLID, 1, (COLORREF)color);
+    HPEN hOld = (HPEN)SelectObject((HDC)hdc, hpen);
+    MoveToEx((HDC)hdc, x1, y1, nullptr);
+    LineTo((HDC)hdc, x2, y2);
+    SelectObject((HDC)hdc, hOld);
+    DeleteObject(hpen);
+    return JS_UNDEFINED;
+}
+
+// api.GetSysColor(index) -> COLORREF as int
+static JSValue js_GetSysColor(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int32_t index = 0; JS_ToInt32(ctx, &index, argv[0]);
+    return JS_NewInt32(ctx, (int32_t)GetSysColor(index));
+}
+
+// api.GetWindowFont(hwnd) -> hFont as BigInt
+static JSValue js_GetWindowFont(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    HFONT hFont = (HFONT)SendMessage((HWND)hwnd, WM_GETFONT, 0, 0);
+    if (!hFont) hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    return JS_NewBigInt64(ctx, (int64_t)hFont);
+}
+
+// api.SelectFont(hdc, hFont) -> previous hFont as BigInt
+static JSValue js_SelectFont(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0;  JS_ToInt64Ex(ctx, &hdc,  argv[0]);
+    int64_t hFont = 0; JS_ToInt64Ex(ctx, &hFont, argv[1]);
+    HGDIOBJ hOld = SelectObject((HDC)hdc, (HFONT)hFont);
+    return JS_NewBigInt64(ctx, (int64_t)hOld);
+}
+
+// api.InvalidateRect(hwnd, rc?)
+static JSValue js_InvalidateRect(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        RECT rc{};
+        JSToRect(ctx, argv[1], rc);
+        InvalidateRect((HWND)hwnd, &rc, TRUE);
+    } else {
+        InvalidateRect((HWND)hwnd, nullptr, TRUE);
+    }
+    return JS_UNDEFINED;
+}
+
+// api.SHAutoComplete(hwnd, flags?)
+// Enables shell auto-complete on an EDIT control.
+// flags: SHACF_* values (default: SHACF_FILESYSTEM | SHACF_URLALL)
+static JSValue js_SHAutoComplete(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    DWORD flags = SHACF_FILESYSTEM | SHACF_URLALL;
+    if (argc >= 2 && !JS_IsUndefined(argv[1])) {
+        int32_t f = 0; JS_ToInt32(ctx, &f, argv[1]);
+        flags = (DWORD)f;
+    }
+    HRESULT hr = SHAutoComplete((HWND)hwnd, flags);
+    return JS_NewBool(ctx, SUCCEEDED(hr));
+}
+
+// api.GetClientRect(hwnd) -> { left, top, right, bottom }
+static JSValue js_GetClientRect(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    RECT rc{};
+    GetClientRect((HWND)hwnd, &rc);
+    return RectToJS(ctx, rc);
+}
+
+// api.CreateCompatibleDC(hdc) -> memDC as BigInt
+static JSValue js_CreateCompatibleDC(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0;
+    if (argc >= 1 && !JS_IsUndefined(argv[0])) JS_ToInt64Ex(ctx, &hdc, argv[0]);
+    return JS_NewBigInt64(ctx, (int64_t)CreateCompatibleDC((HDC)hdc));
+}
+
+// api.CreateCompatibleBitmap(hdc, w, h) -> HBITMAP as BigInt
+static JSValue js_CreateCompatibleBitmap(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0; JS_ToInt64Ex(ctx, &hdc, argv[0]);
+    int32_t w = 0, h = 0;
+    JS_ToInt32(ctx, &w, argv[1]);
+    JS_ToInt32(ctx, &h, argv[2]);
+    return JS_NewBigInt64(ctx, (int64_t)CreateCompatibleBitmap((HDC)hdc, w, h));
+}
+
+// api.SelectObject(hdc, hObj) -> previous object as BigInt
+static JSValue js_SelectObject(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0;  JS_ToInt64Ex(ctx, &hdc,  argv[0]);
+    int64_t hObj = 0; JS_ToInt64Ex(ctx, &hObj, argv[1]);
+    HGDIOBJ hOld = SelectObject((HDC)hdc, (HGDIOBJ)hObj);
+    return JS_NewBigInt64(ctx, (int64_t)hOld);
+}
+
+// api.DeleteObject(hObj)
+static JSValue js_DeleteObject(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hObj = 0; JS_ToInt64Ex(ctx, &hObj, argv[0]);
+    DeleteObject((HGDIOBJ)hObj);
+    return JS_UNDEFINED;
+}
+
+// api.DeleteDC(hdc)
+static JSValue js_DeleteDC(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdc = 0; JS_ToInt64Ex(ctx, &hdc, argv[0]);
+    DeleteDC((HDC)hdc);
+    return JS_UNDEFINED;
+}
+
+// api.BitBlt(hdcDst, x, y, w, h, hdcSrc, srcX, srcY, rop?)
+static JSValue js_BitBlt(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hdcDst = 0; JS_ToInt64Ex(ctx, &hdcDst, argv[0]);
+    int32_t x=0,y=0,w=0,h=0;
+    JS_ToInt32(ctx, &x, argv[1]);
+    JS_ToInt32(ctx, &y, argv[2]);
+    JS_ToInt32(ctx, &w, argv[3]);
+    JS_ToInt32(ctx, &h, argv[4]);
+    int64_t hdcSrc = 0; JS_ToInt64Ex(ctx, &hdcSrc, argv[5]);
+    int32_t sx=0, sy=0;
+    JS_ToInt32(ctx, &sx, argv[6]);
+    JS_ToInt32(ctx, &sy, argv[7]);
+    int32_t rop = SRCCOPY;
+    if (argc >= 9 && !JS_IsUndefined(argv[8])) JS_ToInt32(ctx, &rop, argv[8]);
+    BitBlt((HDC)hdcDst, x, y, w, h, (HDC)hdcSrc, sx, sy, (DWORD)rop);
+    return JS_UNDEFINED;
+}
+
+// api.GetDC(hwnd) -> HDC as BigInt
+static JSValue js_GetDC(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0;
+    if (argc >= 1 && !JS_IsUndefined(argv[0]) && !JS_IsNull(argv[0]))
+        JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    HDC hdc = GetDC((HWND)hwnd);
+    return JS_NewBigInt64(ctx, (int64_t)hdc);
+}
+
+// api.ReleaseDC(hwnd, hdc)
+static JSValue js_ReleaseDC(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int64_t hdc  = 0; JS_ToInt64Ex(ctx, &hdc,  argv[1]);
+    ReleaseDC((HWND)hwnd, (HDC)hdc);
+    return JS_UNDEFINED;
+}
+
 // api.BeginPaint(hwnd, ps) -> HDC (as BigInt)
 // Fills ps.rcPaint with the dirty rectangle.
 JSValue js_BeginPaint(JSContext* ctx,
@@ -1787,24 +2064,25 @@ static JSValue CreateMenuObject(JSContext* ctx, HMENU hMenu)
                                 g_hs.nextX         = btnRc.left;
                                 g_hs.nextY         = btnRc.bottom;
                                 g_hs.nextRcExclude = btnRc;
-                                // Release current button and press the next one
+                                // Release current button, press next, and update hot item.
+                                // Use TB_SETHOTITEM so NM_CUSTOMDRAW receives CDIS_HOT
+                                // correctly for the new button during menu hot-tracking.
                                 SendMessage(g_hs.hToolbar, TB_PRESSBUTTON,
                                     g_hs.currentId, MAKELONG(FALSE, 0));
                                 SendMessage(g_hs.hToolbar, TB_PRESSBUTTON,
                                     tbb.idCommand, MAKELONG(TRUE, 0));
-
-                                // Invalidate each button rect individually so
-                                // NM_CUSTOMDRAW fires with the correct state.
-                                // This prevents the previous button from staying
-                                // in a hot/pressed state with light-mode drawing.
-                                auto invalidateBtn = [&](int cmdId) {
-                                    RECT btnRc{};
-                                    SendMessage(g_hs.hToolbar, TB_GETRECT,
-                                        cmdId, (LPARAM)&btnRc);
-                                    InvalidateRect(g_hs.hToolbar, &btnRc, TRUE);
-                                };
-                                invalidateBtn(g_hs.currentId);
-                                invalidateBtn(tbb.idCommand);
+                                // Set hot item so CDIS_HOT is set in NM_CUSTOMDRAW
+                                int newIdx = (int)SendMessage(g_hs.hToolbar,
+                                    TB_COMMANDTOINDEX, tbb.idCommand, 0);
+                                int oldIdx = (int)SendMessage(g_hs.hToolbar,
+                                    TB_COMMANDTOINDEX, g_hs.currentId, 0);
+                                SendMessage(g_hs.hToolbar, TB_SETHOTITEM, newIdx, 0);
+                                // Invalidate both button rects for immediate repaint
+                                RECT rcOld{}, rcNew{};
+                                SendMessage(g_hs.hToolbar, TB_GETITEMRECT, oldIdx, (LPARAM)&rcOld);
+                                SendMessage(g_hs.hToolbar, TB_GETITEMRECT, newIdx, (LPARAM)&rcNew);
+                                InvalidateRect(g_hs.hToolbar, &rcOld, FALSE);
+                                InvalidateRect(g_hs.hToolbar, &rcNew, FALSE);
                                 UpdateWindow(g_hs.hToolbar);
                                 // Close the current menu
                                 HWND hMenuWnd = FindWindowW(L"#32768", nullptr);
@@ -1935,6 +2213,16 @@ static JSValue js_SetMenu(JSContext* ctx,
     return JS_NewBool(ctx, SetMenu((HWND)hwnd, (HMENU)hMenu));
 }
 
+// api.isDarkMode() -> bool
+static JSValue js_isDarkMode(JSContext* ctx,
+    JSValueConst, int, JSValueConst*)
+{
+    char msg[64];
+    snprintf(msg, sizeof(msg), "isDarkMode called: g_bDarkMode=%d\n", g_bDarkMode);
+    OutputDebugStringA(msg);
+    return JS_NewBool(ctx, g_bDarkMode);
+}
+
 // Forward declarations: defined after js_api_funcs
 static JSValue js_ImageList_Create(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv);
 static JSValue js_SHGetSystemImageList(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv);
@@ -1990,6 +2278,9 @@ static const JSCFunctionListEntry js_api_funcs[] = {
     JS_CFUNC_DEF("ShowWindow",  2, js_ShowWindow),
     JS_CFUNC_DEF("UpdateWindow", 1, js_ShowWindow),
 
+    // Dark mode
+    JS_CFUNC_DEF("isDarkMode",            0, js_isDarkMode),
+
     // ImageList API
     JS_CFUNC_DEF("ImageList_Create",      2, js_ImageList_Create),
     JS_CFUNC_DEF("SHGetSystemImageList",  1, js_SHGetSystemImageList),
@@ -2044,9 +2335,52 @@ static const JSCFunctionListEntry js_api_funcs[] = {
     JS_PROP_INT32_DEF("TPM_LEFTBUTTON",  TPM_LEFTBUTTON,  JS_PROP_CONFIGURABLE),
 
     // Paint API
-    JS_CFUNC_DEF("BeginPaint", 2, js_BeginPaint),
-    JS_CFUNC_DEF("EndPaint",   2, js_EndPaint),
-    JS_CFUNC_DEF("DrawText",   1, js_DrawText),
+    JS_CFUNC_DEF("BeginPaint",     2, js_BeginPaint),
+    JS_CFUNC_DEF("EndPaint",       2, js_EndPaint),
+    JS_CFUNC_DEF("DrawText",       1, js_DrawText),
+    JS_CFUNC_DEF("ImageList_Draw", 1, js_ImageList_Draw),
+    JS_CFUNC_DEF("GetTextExtent",  1, js_GetTextExtent),
+    JS_CFUNC_DEF("SetTextColor",   2, js_SetTextColor),
+    JS_CFUNC_DEF("SetBkMode",      2, js_SetBkMode),
+    JS_CFUNC_DEF("FillRect",       1, js_FillRect),
+    JS_CFUNC_DEF("DrawLine",       1, js_DrawLine),
+    JS_CFUNC_DEF("GetSysColor",    1, js_GetSysColor),
+    JS_CFUNC_DEF("GetWindowFont",  1, js_GetWindowFont),
+    JS_CFUNC_DEF("SelectFont",     2, js_SelectFont),
+    JS_CFUNC_DEF("InvalidateRect", 1, js_InvalidateRect),
+    JS_CFUNC_DEF("GetClientRect",         1, js_GetClientRect),
+    JS_CFUNC_DEF("SHAutoComplete",        1, js_SHAutoComplete),
+
+    // SHACF_* flags for SHAutoComplete
+    JS_PROP_INT32_DEF("SHACF_FILESYSTEM",             (int32_t)SHACF_FILESYSTEM,             JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_URLHISTORY",             (int32_t)SHACF_URLHISTORY,             JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_URLMRU",                 (int32_t)SHACF_URLMRU,                 JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_URLALL",                 (int32_t)SHACF_URLALL,                 JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_FILESYS_ONLY",           (int32_t)SHACF_FILESYS_ONLY,           JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_FILESYS_DIRS",           (int32_t)SHACF_FILESYS_DIRS,           JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_AUTOSUGGEST_FORCE_ON",   (int32_t)SHACF_AUTOSUGGEST_FORCE_ON,   JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_AUTOSUGGEST_FORCE_OFF",  (int32_t)SHACF_AUTOSUGGEST_FORCE_OFF,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_AUTOAPPEND_FORCE_ON",    (int32_t)SHACF_AUTOAPPEND_FORCE_ON,    JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_AUTOAPPEND_FORCE_OFF",   (int32_t)SHACF_AUTOAPPEND_FORCE_OFF,   JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SHACF_DEFAULT",                (int32_t)SHACF_DEFAULT,                JS_PROP_CONFIGURABLE),
+    JS_CFUNC_DEF("GetDC",                 1, js_GetDC),
+    JS_CFUNC_DEF("ReleaseDC",             2, js_ReleaseDC),
+    JS_CFUNC_DEF("CreateCompatibleDC",    1, js_CreateCompatibleDC),
+    JS_CFUNC_DEF("CreateCompatibleBitmap",3, js_CreateCompatibleBitmap),
+    JS_CFUNC_DEF("SelectObject",          2, js_SelectObject),
+    JS_CFUNC_DEF("DeleteObject",          1, js_DeleteObject),
+    JS_CFUNC_DEF("DeleteDC",              1, js_DeleteDC),
+    JS_CFUNC_DEF("BitBlt",                8, js_BitBlt),
+
+    // COLOR_* constants for GetSysColor
+    JS_PROP_INT32_DEF("COLOR_WINDOW",      COLOR_WINDOW,      JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("COLOR_WINDOWTEXT",  COLOR_WINDOWTEXT,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("COLOR_BTNFACE",     COLOR_BTNFACE,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("COLOR_BTNTEXT",     COLOR_BTNTEXT,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("COLOR_HIGHLIGHT",   COLOR_HIGHLIGHT,   JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("COLOR_HIGHLIGHTTEXT", COLOR_HIGHLIGHTTEXT, JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("TRANSPARENT",       TRANSPARENT,       JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("OPAQUE",            OPAQUE,            JS_PROP_CONFIGURABLE),
 
     // DrawText format flags
     JS_PROP_INT32_DEF("DT_LEFT",        DT_LEFT,        JS_PROP_CONFIGURABLE),
@@ -2058,7 +2392,9 @@ static const JSCFunctionListEntry js_api_funcs[] = {
     JS_PROP_INT32_DEF("DT_SINGLELINE",  DT_SINGLELINE,  JS_PROP_CONFIGURABLE),
     JS_PROP_INT32_DEF("DT_WORDBREAK",   DT_WORDBREAK,   JS_PROP_CONFIGURABLE),
     JS_PROP_INT32_DEF("DT_NOCLIP",      DT_NOCLIP,      JS_PROP_CONFIGURABLE),
-    JS_PROP_INT32_DEF("DT_CALCRECT",    DT_CALCRECT,    JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("DT_CALCRECT",      DT_CALCRECT,      JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("DT_END_ELLIPSIS",  DT_END_ELLIPSIS,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("DT_PATH_ELLIPSIS", DT_PATH_ELLIPSIS, JS_PROP_CONFIGURABLE),
 
 };
 

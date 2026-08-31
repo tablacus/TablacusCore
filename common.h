@@ -25,6 +25,8 @@ using Microsoft::WRL::ComPtr;
 #pragma warning(push)
 #pragma warning(disable: 4244)
 #include "quickjs.h"
+
+extern BOOL g_bDarkMode;
 #pragma warning(pop)
 #include "quickjs-libc.h"
 #include "darkmode.h"

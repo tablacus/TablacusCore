@@ -3,6 +3,7 @@
 
 #include "framework.h"
 #include "TablacusCore.h"
+#include <pathcch.h>
 
 #define MAX_LOADSTRING 100
 #if defined(_WINDLL) || defined(_DEBUG)
@@ -10,6 +11,35 @@
 HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
+std::wstring g_scriptDir;                       // directory containing main.js
+
+// Normalize module name: resolve relative paths against the script directory
+static char* js_module_normalize(JSContext* ctx,
+    const char* base_name, const char* name, void* opaque)
+{
+    // "api" is a built-in, pass through as-is
+    if (strcmp(name, "api") == 0)
+        return js_strdup(ctx, name);
+
+    // Build absolute path: start from base_name's directory
+    std::wstring base = Utf8ToWide(base_name);
+    std::wstring rel  = Utf8ToWide(name);
+
+    // Get directory of base
+    std::wstring dir = base;
+    auto slash = dir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos)
+        dir = dir.substr(0, slash + 1);
+    else
+        dir = g_scriptDir;
+
+    // Combine and canonicalize
+    wchar_t full[MAX_PATH]{};
+    PathCchCombineEx(full, MAX_PATH, dir.c_str(), rel.c_str(), PATHCCH_ALLOW_LONG_PATHS);
+
+    std::string utf8 = WideToUtf8(full);
+    return js_strdup(ctx, utf8.c_str());
+}
 IWICImagingFactory* g_pWICFactory = nullptr;
 
 LPFNRegenerateUserEnvironment _RegenerateUserEnvironment = nullptr;
@@ -40,7 +70,29 @@ JSModuleDef* js_module_loader(JSContext* ctx,
     if (strcmp(module_name, "api") == 0) {
         return js_init_module_api(ctx, module_name);
     }
-    return nullptr;
+
+    // Load JS file modules relative to the scripts directory
+    std::wstring wpath = Utf8ToWide(module_name);
+
+    // Read the file
+    HANDLE hFile = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return nullptr;
+
+    DWORD size = GetFileSize(hFile, nullptr);
+    std::string src(size, '\0');
+    DWORD read = 0;
+    ReadFile(hFile, src.data(), size, &read, nullptr);
+    CloseHandle(hFile);
+
+    // Compile as module
+    JSValue func = JS_Eval(ctx, src.c_str(), src.size(),
+        module_name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(func)) return nullptr;
+
+    JSModuleDef* m = (JSModuleDef*)JS_VALUE_GET_PTR(func);
+    JS_FreeValue(ctx, func);
+    return m;
 }
 
 #ifdef _WINDLL
@@ -132,12 +184,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     JS_NewClass(rt, g_image_class_id, &class_def);
 
     // Register the module loader
-    JS_SetModuleLoaderFunc(rt, nullptr, js_module_loader, nullptr);
+    JS_SetModuleLoaderFunc(rt, js_module_normalize, js_module_loader, nullptr);
 
     // Load scripts\main.js
 	wchar_t outPath[MAX_PATHEX];
    :: GetModuleFileName(nullptr, outPath, MAX_PATHEX);
     wchar_t* p = wcsrchr(outPath, L'\\');
+    if (p) p[1] = L'\0';
+    g_scriptDir = outPath;  // save script directory for module resolution
+    wcscat_s(outPath, MAX_PATHEX, L"scripts\\main.js");
     if (p) {
         *(p + 1) = 0;
     }
@@ -154,17 +209,60 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
     std::string utf8Path = WideToUtf8(outPath);
 
+    // Initialize dark mode state before running JS so isDarkMode() returns correctly
+    teGetDarkMode();
+
     JSValue val = JS_Eval(g_ctx,
         script.c_str(),
         script.size(),
         utf8Path.c_str(),
         JS_EVAL_TYPE_MODULE);
 
+    // Execute pending jobs (runs module top-level code)
+    JSContext* pctx = nullptr;
+    while (JS_ExecutePendingJob(JS_GetRuntime(g_ctx), &pctx) > 0) {}
+
     if (JS_IsException(val)) {
         JSValue exc = JS_GetException(g_ctx);
+
+        std::string msg;
+
+        // Try direct string conversion
         const char* err = JS_ToCString(g_ctx, exc);
-		MessageBoxA(nullptr, err, "Error", MB_OK | MB_ICONERROR);
+        if (err && strcmp(err, "[uninitialized]") != 0 && strlen(err) > 0) {
+            msg += err;
+        }
         JS_FreeCString(g_ctx, err);
+
+        // Try stack property
+        JSValue stack = JS_GetPropertyStr(g_ctx, exc, "stack");
+        if (!JS_IsUndefined(stack)) {
+            const char* st = JS_ToCString(g_ctx, stack);
+            if (st) { if (!msg.empty()) msg += "\n\n"; msg += st; JS_FreeCString(g_ctx, st); }
+        }
+        JS_FreeValue(g_ctx, stack);
+
+        // Try message property
+        JSValue jmsg = JS_GetPropertyStr(g_ctx, exc, "message");
+        if (!JS_IsUndefined(jmsg)) {
+            const char* ms = JS_ToCString(g_ctx, jmsg);
+            if (ms) { if (!msg.empty()) msg += "\n"; msg += "message: "; msg += ms; JS_FreeCString(g_ctx, ms); }
+        }
+        JS_FreeValue(g_ctx, jmsg);
+
+        // Fallback: JSON stringify
+        if (msg.empty()) {
+            JSValue json = JS_JSONStringify(g_ctx, exc, JS_UNDEFINED, JS_UNDEFINED);
+            if (!JS_IsException(json)) {
+                const char* js = JS_ToCString(g_ctx, json);
+                if (js) { msg += js; JS_FreeCString(g_ctx, js); }
+                JS_FreeValue(g_ctx, json);
+            }
+        }
+
+        if (msg.empty()) msg = "(unknown error - exception object has no string representation)";
+
+        MessageBoxA(nullptr, msg.c_str(), "Error", MB_OK | MB_ICONERROR);
         JS_FreeValue(g_ctx, exc);
     }
 

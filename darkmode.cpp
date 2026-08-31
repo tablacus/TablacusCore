@@ -174,96 +174,19 @@ LRESULT CALLBACK TEToolBarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 		}
 		case WM_PAINT:
 		{
-			// 1. Let the toolbar draw normally first
-			DefSubclassProc(hwnd, msg, wParam, lParam);
-
-			// 2. Post-paint: walk all buttons and repaint with dark colors
-			HDC hdc = GetDC(hwnd);
-			if (!hdc) return 0;
-
-			int count = (int)SendMessage(hwnd, TB_BUTTONCOUNT, 0, 0);
-			for (int i = 0; i < count; i++) {
-				TBBUTTON tbb{};
-				SendMessage(hwnd, TB_GETBUTTON, i, (LPARAM)&tbb);
-				if (!(tbb.fsState & TBSTATE_ENABLED) && (tbb.fsStyle & TBSTYLE_SEP))
-					continue; // skip hidden separators
-
-				RECT rc{};
-				SendMessage(hwnd, TB_GETITEMRECT, i, (LPARAM)&rc);
-
-				// Determine state
-				bool hot     = (tbb.fsState & TBSTATE_PRESSED) != 0
-				            || SendMessage(hwnd, TB_GETHOTITEM, 0, 0) == i;
-				bool checked = (tbb.fsState & TBSTATE_CHECKED) != 0;
-
-				COLORREF bgColor = TECL_DARKBG;
-				if (hot)    bgColor = 0x404040;
-				if (checked) bgColor = TECL_DARKSEL;
-
-				if (tbb.fsStyle & TBSTYLE_SEP) {
-					// Repaint separator background
-					SetDCBrushColor(hdc, TECL_DARKBG);
-					FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
-					// Draw dim vertical line
-					RECT rcLine = rc;
-					rcLine.left  = rc.left + (rc.right - rc.left) / 2 - 1;
-					rcLine.right = rcLine.left + 1;
-					InflateRect(&rcLine, 0, -3);
-					SetDCBrushColor(hdc, 0x555555);
-					FillRect(hdc, &rcLine, GetStockBrush(DC_BRUSH));
-					continue;
-				}
-
-				if (bgColor == TECL_DARKBG) continue; // nothing to override
-
-				// Repaint button background with dark color
-				SetDCBrushColor(hdc, bgColor);
-				FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
-
-				// Redraw icon
-				int imgIdx = tbb.iBitmap;
-				HIMAGELIST hIL = (HIMAGELIST)SendMessage(hwnd, TB_GETIMAGELIST, 0, 0);
-				if (hIL && imgIdx >= 0) {
-					int cx = 16, cy = 16;
-					ImageList_GetIconSize(hIL, &cx, &cy);
-					int x = rc.left + (rc.right - rc.left - cx) / 2;
-					int y = rc.top  + (rc.bottom - rc.top  - cy) / 2;
-					// If text is present, shift icon left
-					if (tbb.iString >= 0) {
-						x = rc.left + 4;
-					}
-					ImageList_Draw(hIL, imgIdx, hdc, x, y, ILD_TRANSPARENT);
-				}
-
-				// Redraw text
-				if (tbb.iString >= 0) {
-					WCHAR buf[256]{};
-					SendMessage(hwnd, TB_GETBUTTONTEXT, tbb.idCommand, (LPARAM)buf);
-					if (buf[0]) {
-						SetBkMode(hdc, TRANSPARENT);
-						SetTextColor(hdc, TECL_DARKTEXT);
-						HFONT hFont = (HFONT)SendMessage(hwnd, WM_GETFONT, 0, 0);
-						HFONT hOld  = (HFONT)SelectObject(hdc, hFont);
-						RECT rcText = rc;
-						// offset text right of icon if icon present
-						if (imgIdx >= 0) {
-							int cx = 16;
-							ImageList_GetIconSize(
-								(HIMAGELIST)SendMessage(hwnd, TB_GETIMAGELIST, 0, 0),
-								&cx, nullptr);
-							rcText.left += 4 + cx + 2;
-						}
-						DrawTextW(hdc, buf, -1, &rcText,
-							DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
-						SelectObject(hdc, hOld);
-					}
-				}
-			}
-
-			ReleaseDC(hwnd, hdc);
-			return 0;
+			// Delegate entirely to DefSubclassProc.
+			// NM_CUSTOMDRAW (handled in parent's DarkProc) controls all colors.
+			// We only need WM_ERASEBKGND to fill the dark background.
+			return DefSubclassProc(hwnd, msg, wParam, lParam);
 		}
 		}
+	}
+	// WM_NCDESTROY must always be handled regardless of dark mode
+	// to clean up the subclass when the window is destroyed.
+	if (msg == WM_NCDESTROY) {
+		g_umDlgProc.erase(hwnd);
+		RemoveWindowSubclass(hwnd, TEToolBarProc, (UINT_PTR)TEToolBarProc);
+		return DefSubclassProc(hwnd, msg, wParam, lParam);
 	}
 	return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
@@ -493,12 +416,11 @@ VOID FixChild(HWND hwnd, HWND hwnd1) {
 		if (_AllowDarkModeForWindow) {
 			_AllowDarkModeForWindow(hwnd1, g_bDarkMode);
 		}
-		// Subclass to handle WM_ERASEBKGND for dark background
-		auto itr = g_umDlgProc.find(hwnd1);
-		if (itr == g_umDlgProc.end()) {
-			SetWindowSubclass(hwnd1, TEToolBarProc, (UINT_PTR)TEToolBarProc, 0);
-			g_umDlgProc[hwnd1] = hwnd;
-		}
+		// Subclass to handle WM_ERASEBKGND for dark background.
+		// RemoveWindowSubclass first to avoid double-subclassing on theme change.
+		RemoveWindowSubclass(hwnd1, TEToolBarProc, (UINT_PTR)TEToolBarProc);
+		SetWindowSubclass(hwnd1, TEToolBarProc, (UINT_PTR)TEToolBarProc, 0);
+		g_umDlgProc[hwnd1] = hwnd;
 		::InvalidateRect(hwnd1, nullptr, TRUE);
 	}
 	else if (::PathMatchSpecA(pszClassA, WC_TABCONTROLA)) {
@@ -685,7 +607,28 @@ LRESULT DarkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 						pcd->clrBtnHighlight      = bgColor;
 						pcd->clrHighlightHotTrack = 0x404040;
 						// TBCDRF_HILITEHOTTRACK: use clrHighlightHotTrack for hot state
-						return TBCDRF_USECDCOLORS | TBCDRF_HILITEHOTTRACK;
+						return TBCDRF_USECDCOLORS | TBCDRF_HILITEHOTTRACK | CDRF_NOTIFYPOSTPAINT;
+					}
+					case CDDS_ITEMPOSTPAINT:
+					{
+						// Draw dropdown arrow for BTNS_WHOLEDROPDOWN after system draws icon/text
+						TBBUTTON tbb{};
+						int idx = (int)SendMessage(lpnmhdr->hwndFrom,
+							TB_COMMANDTOINDEX, pcd->nmcd.dwItemSpec, 0);
+						SendMessage(lpnmhdr->hwndFrom, TB_GETBUTTON, idx, (LPARAM)&tbb);
+						if (tbb.fsStyle & BTNS_WHOLEDROPDOWN) {
+							HDC  hdc = pcd->nmcd.hdc;
+							RECT rc  = pcd->nmcd.rc;
+							int aw = 7, ah = 4;
+							int ax = rc.right - aw - 3;
+							int ay = rc.top + (rc.bottom - rc.top - ah) / 2;
+							SetDCBrushColor(hdc, TECL_DARKTEXT);
+							for (int row = 0; row < ah; row++) {
+								RECT dot = { ax + row, ay + row, ax + aw - row, ay + row + 1 };
+								FillRect(hdc, &dot, GetStockBrush(DC_BRUSH));
+							}
+						}
+						return CDRF_DODEFAULT;
 					}
 					}
 					return CDRF_DODEFAULT;
