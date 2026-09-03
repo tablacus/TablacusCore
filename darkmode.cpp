@@ -161,6 +161,74 @@ VOID teFixGroup(LPNMLVCUSTOMDRAW lplvcd, COLORREF clrBk)
 	}
 }
 
+LRESULT CALLBACK TEHeaderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+	if (g_bDarkMode) {
+		switch (msg) {
+		case WM_ERASEBKGND:
+		{
+			RECT rc;
+			GetClientRect(hwnd, &rc);
+			FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
+			return 1;
+		}
+		case WM_NOTIFY:
+		{
+			LPNMHDR pnm = (LPNMHDR)lParam;
+			if (pnm->code == NM_CUSTOMDRAW) {
+				LPNMCUSTOMDRAW pcd = (LPNMCUSTOMDRAW)lParam;
+				switch (pcd->dwDrawStage) {
+				case CDDS_PREPAINT:
+					return CDRF_NOTIFYITEMDRAW;
+				case CDDS_ITEMPREPAINT:
+				{
+					HDC hdc = pcd->hdc;
+					RECT rc = pcd->rc;
+
+					// Dark background
+					SetDCBrushColor(hdc, 0x333333);
+					FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
+
+					// Draw separator line on right edge
+					RECT rcLine = { rc.right - 1, rc.top + 2, rc.right, rc.bottom - 2 };
+					SetDCBrushColor(hdc, 0x555555);
+					FillRect(hdc, &rcLine, GetStockBrush(DC_BRUSH));
+
+					// Draw header text
+					HDITEMW hdi{};
+					WCHAR buf[256]{};
+					hdi.mask       = HDI_TEXT | HDI_FORMAT;
+					hdi.pszText    = buf;
+					hdi.cchTextMax = (int)std::size(buf);
+					Header_GetItem(hwnd, (int)pcd->dwItemSpec, &hdi);
+
+					if (buf[0]) {
+						SetBkMode(hdc, TRANSPARENT);
+						SetTextColor(hdc, TECL_DARKTEXT);
+						HFONT hFont = (HFONT)SendMessage(hwnd, WM_GETFONT, 0, 0);
+						HFONT hOld  = (HFONT)SelectObject(hdc, hFont);
+						RECT rcText = { rc.left + 6, rc.top, rc.right - 6, rc.bottom };
+						UINT fmt = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+						if      (hdi.fmt & HDF_CENTER) fmt |= DT_CENTER;
+						else if (hdi.fmt & HDF_RIGHT)  fmt |= DT_RIGHT;
+						else                            fmt |= DT_LEFT;
+						DrawTextW(hdc, buf, -1, &rcText, fmt);
+						SelectObject(hdc, hOld);
+					}
+					return CDRF_SKIPDEFAULT;
+				}
+				}
+			}
+			break;
+		}
+		}
+	}
+	if (msg == WM_NCDESTROY) {
+		RemoveWindowSubclass(hwnd, TEHeaderProc, (UINT_PTR)TEHeaderProc);
+	}
+	return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
 LRESULT CALLBACK TEToolBarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	if (g_bDarkMode) {
@@ -400,6 +468,11 @@ VOID FixChild(HWND hwnd, HWND hwnd1) {
 		HWND hHeader = ListView_GetHeader(hwnd1);
 		if (hHeader) {
 			SetWindowTheme(hHeader, g_bDarkMode ? L"darkmode_itemsview" : L"explorer", nullptr);
+			// Subclass header for custom dark text rendering
+			RemoveWindowSubclass(hHeader, TEHeaderProc, (UINT_PTR)TEHeaderProc);
+			if (g_bDarkMode) {
+				SetWindowSubclass(hHeader, TEHeaderProc, (UINT_PTR)TEHeaderProc, 0);
+			}
 		}
 		if (g_bDarkMode) {
 			auto itr = g_umDlgProc.find(hwnd1);
@@ -546,6 +619,61 @@ LRESULT DarkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case WM_NOTIFY:
 			LPNMHDR lpnmhdr;
 			lpnmhdr = (LPNMHDR)lParam;
+
+			// Header (SysHeader32) dark mode custom draw
+			// Header NM_CUSTOMDRAW is sent to the ListView's parent window
+			if (lpnmhdr->code == NM_CUSTOMDRAW && g_bDarkMode) {
+				CHAR cls[64]{};
+				GetClassNameA(lpnmhdr->hwndFrom, cls, 64);
+				if (PathMatchSpecA(cls, WC_HEADERA)) {
+					LPNMCUSTOMDRAW pcd = (LPNMCUSTOMDRAW)lParam;
+					switch (pcd->dwDrawStage) {
+					case CDDS_PREPAINT:
+						return CDRF_NOTIFYITEMDRAW;
+					case CDDS_ITEMPREPAINT:
+					{
+						HDC hdc = pcd->hdc;
+						RECT rc = pcd->rc;
+
+						// Dark background
+						SetDCBrushColor(hdc, 0x333333);
+						FillRect(hdc, &rc, GetStockBrush(DC_BRUSH));
+
+						// Separator line on right edge
+						RECT rcLine = { rc.right - 1, rc.top + 2, rc.right, rc.bottom - 2 };
+						SetDCBrushColor(hdc, 0x555555);
+						FillRect(hdc, &rcLine, GetStockBrush(DC_BRUSH));
+
+						// Header item text
+						HDITEMW hdi{};
+						WCHAR buf[256]{};
+						hdi.mask        = HDI_TEXT | HDI_FORMAT;
+						hdi.pszText     = buf;
+						hdi.cchTextMax  = (int)std::size(buf);
+						Header_GetItem(lpnmhdr->hwndFrom,
+							(int)pcd->dwItemSpec, &hdi);
+
+						if (buf[0]) {
+							SetBkMode(hdc, TRANSPARENT);
+							SetTextColor(hdc, TECL_DARKTEXT);
+							HFONT hFont = (HFONT)SendMessage(
+								lpnmhdr->hwndFrom, WM_GETFONT, 0, 0);
+							HFONT hOld = (HFONT)SelectObject(hdc, hFont);
+							RECT rcText = { rc.left + 6, rc.top,
+								rc.right - 6, rc.bottom };
+							UINT fmt = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+							if      (hdi.fmt & HDF_CENTER) fmt |= DT_CENTER;
+							else if (hdi.fmt & HDF_RIGHT)  fmt |= DT_RIGHT;
+							else                           fmt |= DT_LEFT;
+							DrawTextW(hdc, buf, -1, &rcText, fmt);
+							SelectObject(hdc, hOld);
+						}
+						return CDRF_SKIPDEFAULT;
+					}
+					}
+					return CDRF_DODEFAULT;
+				}
+			}
 
 			// ToolBar dark mode custom draw
 			if (lpnmhdr->code == NM_CUSTOMDRAW && g_bDarkMode) {

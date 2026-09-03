@@ -1117,7 +1117,83 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
             SendMessage(hwnd, TB_AUTOSIZE, 0, 0);
         }
     }
-    else if (PathMatchSpec(type.c_str(), L"Explorer*")) {
+    else if (lstrcmpi(type.c_str(), L"LISTVIEW") == 0 ||
+             lstrcmpi(type.c_str(), L"SysListView32") == 0) {
+        // Read style options from opts
+        int32_t lvStyle = LVS_REPORT | LVS_SHOWSELALWAYS;
+        JSValue styleJS = JS_GetPropertyStr(ctx, opts, "lvStyle");
+        if (!JS_IsUndefined(styleJS)) {
+            int32_t s = 0; JS_ToInt32(ctx, &s, styleJS); lvStyle = s;
+        }
+        JS_FreeValue(ctx, styleJS);
+
+        hwnd = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            nullptr,
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS |
+            (DWORD)lvStyle,
+            x, y, width, height,
+            parent->hwnd,
+            nullptr,
+            GetModuleHandle(nullptr),
+            nullptr
+        );
+
+        if (hwnd) {
+            // Extended styles
+            int32_t lvExStyle = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER |
+                                LVS_EX_HEADERDRAGDROP;
+            JSValue exStyleJS = JS_GetPropertyStr(ctx, opts, "lvExStyle");
+            if (!JS_IsUndefined(exStyleJS)) {
+                int32_t s = 0; JS_ToInt32(ctx, &s, exStyleJS); lvExStyle = s;
+            }
+            JS_FreeValue(ctx, exStyleJS);
+            ListView_SetExtendedListViewStyle(hwnd, (DWORD)lvExStyle);
+
+            // Columns from opts.columns: [{ text, width, align? }, ...]
+            JSValue colsJS = JS_GetPropertyStr(ctx, opts, "columns");
+            if (JS_IsArray(colsJS)) {
+                JSValue lenJS = JS_GetPropertyStr(ctx, colsJS, "length");
+                uint32_t len = 0; JS_ToUint32(ctx, &len, lenJS); JS_FreeValue(ctx, lenJS);
+                for (uint32_t ci = 0; ci < len; ci++) {
+                    JSValue col = JS_GetPropertyUint32(ctx, colsJS, ci);
+                    LVCOLUMNW lvc{};
+                    lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+
+                    // text
+                    JSValue txtJS = JS_GetPropertyStr(ctx, col, "text");
+                    std::wstring colText;
+                    if (!JS_IsUndefined(txtJS)) {
+                        const char* u = JS_ToCString(ctx, txtJS);
+                        if (u) { colText = Utf8ToWide(u); JS_FreeCString(ctx, u); }
+                    }
+                    JS_FreeValue(ctx, txtJS);
+                    lvc.pszText = colText.data();
+
+                    // width
+                    int32_t colW = 100;
+                    JSValue wJS = JS_GetPropertyStr(ctx, col, "width");
+                    if (!JS_IsUndefined(wJS)) JS_ToInt32(ctx, &colW, wJS);
+                    JS_FreeValue(ctx, wJS);
+                    lvc.cx = colW;
+
+                    // align (0=left, 1=right, 2=center)
+                    int32_t align = LVCFMT_LEFT;
+                    JSValue aJS = JS_GetPropertyStr(ctx, col, "align");
+                    if (!JS_IsUndefined(aJS)) JS_ToInt32(ctx, &align, aJS);
+                    JS_FreeValue(ctx, aJS);
+                    lvc.fmt = align;
+
+                    ListView_InsertColumn(hwnd, (int)ci, &lvc);
+                    JS_FreeValue(ctx, col);
+                }
+            }
+            JS_FreeValue(ctx, colsJS);
+        }
+    }
+    else if (PathMatchSpec(type.c_str(), L"Explorer*") ||
+             lstrcmpi(type.c_str(), L"EXPLORER") == 0) {
         hwnd = CreateWindowExW(
             0,
             L"STATIC",
@@ -1353,6 +1429,22 @@ JSValue js_MessageBox(JSContext* ctx,
     return JS_NewInt32(ctx, result);
 }
 
+// api.SetWindowPos(hwnd, x, y, w, h, flags?)
+static JSValue js_SetWindowPos(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t x=0,y=0,w=0,h=0;
+    JS_ToInt32(ctx, &x, argv[1]);
+    JS_ToInt32(ctx, &y, argv[2]);
+    JS_ToInt32(ctx, &w, argv[3]);
+    JS_ToInt32(ctx, &h, argv[4]);
+    int32_t flags = SWP_NOZORDER;
+    if (argc >= 6 && !JS_IsUndefined(argv[5])) JS_ToInt32(ctx, &flags, argv[5]);
+    return JS_NewBool(ctx,
+        SetWindowPos((HWND)hwnd, nullptr, x, y, w, h, (UINT)flags));
+}
+
 JSValue js_ShowWindow(JSContext* ctx,
     JSValueConst this_val,
     int argc,
@@ -1561,6 +1653,215 @@ static JSValue js_InvalidateRect(JSContext* ctx,
 // api.SHAutoComplete(hwnd, flags?)
 // Enables shell auto-complete on an EDIT control.
 // flags: SHACF_* values (default: SHACF_FILESYSTEM | SHACF_URLALL)
+// ─── ListView API ─────────────────────────────────────────────────────────
+
+// api.LV_InsertItem(hwnd, { index?, text, iconIndex?, param? }) -> inserted index
+static JSValue js_LV_InsertItem(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    JSValue opts = argv[1];
+
+    LVITEMW lvi{};
+    lvi.mask = LVIF_TEXT;
+
+    int32_t index = (int32_t)SendMessage((HWND)hwnd, LVM_GETITEMCOUNT, 0, 0);
+    JSValue idxJS = JS_GetPropertyStr(ctx, opts, "index");
+    if (!JS_IsUndefined(idxJS)) JS_ToInt32(ctx, &index, idxJS);
+    JS_FreeValue(ctx, idxJS);
+    lvi.iItem = index;
+
+    JSValue txtJS = JS_GetPropertyStr(ctx, opts, "text");
+    std::wstring text;
+    if (!JS_IsUndefined(txtJS)) {
+        const char* u = JS_ToCString(ctx, txtJS);
+        if (u) { text = Utf8ToWide(u); JS_FreeCString(ctx, u); }
+    }
+    JS_FreeValue(ctx, txtJS);
+    lvi.pszText = text.data();
+
+    JSValue imgJS = JS_GetPropertyStr(ctx, opts, "iconIndex");
+    if (!JS_IsUndefined(imgJS)) {
+        int32_t img = 0; JS_ToInt32(ctx, &img, imgJS);
+        lvi.iImage = img; lvi.mask |= LVIF_IMAGE;
+    }
+    JS_FreeValue(ctx, imgJS);
+
+    JSValue paramJS = JS_GetPropertyStr(ctx, opts, "param");
+    if (!JS_IsUndefined(paramJS)) {
+        int64_t p = 0; JS_ToInt64Ex(ctx, &p, paramJS);
+        lvi.lParam = (LPARAM)p; lvi.mask |= LVIF_PARAM;
+    }
+    JS_FreeValue(ctx, paramJS);
+
+    int result = (int)SendMessage((HWND)hwnd, LVM_INSERTITEMW, 0, (LPARAM)&lvi);
+    return JS_NewInt32(ctx, result);
+}
+
+// api.LV_SetItem(hwnd, { index, subIndex?, text?, iconIndex? })
+static JSValue js_LV_SetItem(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    JSValue opts = argv[1];
+
+    LVITEMW lvi{};
+    int32_t index = 0, sub = 0;
+    JSValue v;
+    v = JS_GetPropertyStr(ctx, opts, "index");    JS_ToInt32(ctx, &index, v); JS_FreeValue(ctx, v);
+    v = JS_GetPropertyStr(ctx, opts, "subIndex"); JS_ToInt32(ctx, &sub,   v); JS_FreeValue(ctx, v);
+    lvi.iItem    = index;
+    lvi.iSubItem = sub;
+
+    JSValue txtJS = JS_GetPropertyStr(ctx, opts, "text");
+    std::wstring text;
+    if (!JS_IsUndefined(txtJS)) {
+        const char* u = JS_ToCString(ctx, txtJS);
+        if (u) { text = Utf8ToWide(u); JS_FreeCString(ctx, u); }
+        lvi.pszText = text.data();
+        lvi.mask |= LVIF_TEXT;
+    }
+    JS_FreeValue(ctx, txtJS);
+
+    JSValue imgJS = JS_GetPropertyStr(ctx, opts, "iconIndex");
+    if (!JS_IsUndefined(imgJS)) {
+        int32_t img = 0; JS_ToInt32(ctx, &img, imgJS);
+        lvi.iImage = img; lvi.mask |= LVIF_IMAGE;
+    }
+    JS_FreeValue(ctx, imgJS);
+
+    SendMessage((HWND)hwnd, LVM_SETITEMW, 0, (LPARAM)&lvi);
+    return JS_UNDEFINED;
+}
+
+// api.LV_DeleteItem(hwnd, index)
+static JSValue js_LV_DeleteItem(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t index = 0; JS_ToInt32(ctx, &index, argv[1]);
+    return JS_NewBool(ctx, ListView_DeleteItem((HWND)hwnd, index));
+}
+
+// api.LV_DeleteAllItems(hwnd)
+static JSValue js_LV_DeleteAllItems(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    return JS_NewBool(ctx, ListView_DeleteAllItems((HWND)hwnd));
+}
+
+// api.LV_GetItemCount(hwnd) -> int
+static JSValue js_LV_GetItemCount(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    return JS_NewInt32(ctx, ListView_GetItemCount((HWND)hwnd));
+}
+
+// api.LV_GetItemText(hwnd, index, subIndex?) -> string
+static JSValue js_LV_GetItemText(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t index = 0, sub = 0;
+    JS_ToInt32(ctx, &index, argv[1]);
+    if (argc >= 3) JS_ToInt32(ctx, &sub, argv[2]);
+
+    WCHAR buf[1024]{};
+    LVITEMW lvi{};
+    lvi.iSubItem  = sub;
+    lvi.pszText   = buf;
+    lvi.cchTextMax = (int)std::size(buf);
+    SendMessage((HWND)hwnd, LVM_GETITEMTEXTW, (WPARAM)index, (LPARAM)&lvi);
+
+    std::string utf8 = WideToUtf8(buf);
+    return JS_NewString(ctx, utf8.c_str());
+}
+
+// api.LV_GetSelectedIndex(hwnd) -> int (-1 if none)
+static JSValue js_LV_GetSelectedIndex(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    return JS_NewInt32(ctx, ListView_GetNextItem((HWND)hwnd, -1, LVNI_SELECTED));
+}
+
+// api.LV_SetImageList(hwnd, imageList, type?)
+// type: 0=LVSIL_NORMAL, 1=LVSIL_SMALL (default), 2=LVSIL_STATE
+static JSValue js_LV_SetImageList(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    CImageList* il = static_cast<CImageList*>(
+        JS_GetOpaque(argv[1], g_imagelist_class_id));
+    if (!il || !il->hIL) return JS_NULL;
+    int32_t type = LVSIL_SMALL;
+    if (argc >= 3) JS_ToInt32(ctx, &type, argv[2]);
+    HIMAGELIST hOld = ListView_SetImageList((HWND)hwnd, il->hIL, type);
+    return JS_NewBigInt64(ctx, (int64_t)hOld);
+}
+
+// api.LV_InsertColumn(hwnd, index, { text, width, align? })
+static JSValue js_LV_InsertColumn(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t index = 0; JS_ToInt32(ctx, &index, argv[1]);
+    JSValue opts = argv[2];
+
+    LVCOLUMNW lvc{};
+    lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+
+    JSValue txtJS = JS_GetPropertyStr(ctx, opts, "text");
+    std::wstring text;
+    if (!JS_IsUndefined(txtJS)) {
+        const char* u = JS_ToCString(ctx, txtJS);
+        if (u) { text = Utf8ToWide(u); JS_FreeCString(ctx, u); }
+    }
+    JS_FreeValue(ctx, txtJS);
+    lvc.pszText = text.data();
+
+    int32_t w = 100;
+    JSValue wJS = JS_GetPropertyStr(ctx, opts, "width");
+    if (!JS_IsUndefined(wJS)) JS_ToInt32(ctx, &w, wJS);
+    JS_FreeValue(ctx, wJS);
+    lvc.cx = w;
+
+    int32_t align = LVCFMT_LEFT;
+    JSValue aJS = JS_GetPropertyStr(ctx, opts, "align");
+    if (!JS_IsUndefined(aJS)) JS_ToInt32(ctx, &align, aJS);
+    JS_FreeValue(ctx, aJS);
+    lvc.fmt = align;
+
+    return JS_NewInt32(ctx, (int)SendMessage((HWND)hwnd, LVM_INSERTCOLUMNW,
+        (WPARAM)index, (LPARAM)&lvc));
+}
+
+// api.LV_SetColumnWidth(hwnd, index, width)
+static JSValue js_LV_SetColumnWidth(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t index = 0, w = 0;
+    JS_ToInt32(ctx, &index, argv[1]);
+    JS_ToInt32(ctx, &w,     argv[2]);
+    return JS_NewBool(ctx, ListView_SetColumnWidth((HWND)hwnd, index, w));
+}
+
+// api.LV_SetItemState(hwnd, index, state, mask)
+static JSValue js_LV_SetItemState(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t index = 0, state = 0, mask = 0;
+    JS_ToInt32(ctx, &index, argv[1]);
+    JS_ToInt32(ctx, &state, argv[2]);
+    JS_ToInt32(ctx, &mask,  argv[3]);
+    ListView_SetItemState((HWND)hwnd, index, (UINT)state, (UINT)mask);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_SHAutoComplete(JSContext* ctx,
     JSValueConst, int argc, JSValueConst* argv)
 {
@@ -2275,8 +2576,67 @@ static const JSCFunctionListEntry js_api_funcs[] = {
     JS_PROP_INT32_DEF("IDTRYAGAIN", IDTRYAGAIN, JS_PROP_CONFIGURABLE),
     JS_PROP_INT32_DEF("IDCONTINUE", IDCONTINUE, JS_PROP_CONFIGURABLE),
 
-    JS_CFUNC_DEF("ShowWindow",  2, js_ShowWindow),
-    JS_CFUNC_DEF("UpdateWindow", 1, js_ShowWindow),
+    JS_CFUNC_DEF("ShowWindow",    2, js_ShowWindow),
+    JS_CFUNC_DEF("UpdateWindow",  1, js_UpdateWindow),
+    JS_CFUNC_DEF("SetWindowPos",  5, js_SetWindowPos),
+
+    // ShowWindow flags
+    JS_PROP_INT32_DEF("SW_HIDE",     SW_HIDE,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SW_SHOW",     SW_SHOW,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SW_SHOWNA",   SW_SHOWNA,   JS_PROP_CONFIGURABLE),
+
+    // SetWindowPos flags
+    JS_PROP_INT32_DEF("SWP_NOZORDER",    SWP_NOZORDER,    JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SWP_NOACTIVATE",  SWP_NOACTIVATE,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SWP_NOMOVE",      SWP_NOMOVE,      JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("SWP_NOSIZE",      SWP_NOSIZE,      JS_PROP_CONFIGURABLE),
+
+    // ListView API
+    JS_CFUNC_DEF("LV_InsertItem",     2, js_LV_InsertItem),
+    JS_CFUNC_DEF("LV_SetItem",        2, js_LV_SetItem),
+    JS_CFUNC_DEF("LV_DeleteItem",     2, js_LV_DeleteItem),
+    JS_CFUNC_DEF("LV_DeleteAllItems", 1, js_LV_DeleteAllItems),
+    JS_CFUNC_DEF("LV_GetItemCount",   1, js_LV_GetItemCount),
+    JS_CFUNC_DEF("LV_GetItemText",    2, js_LV_GetItemText),
+    JS_CFUNC_DEF("LV_GetSelectedIndex",1,js_LV_GetSelectedIndex),
+    JS_CFUNC_DEF("LV_SetImageList",   2, js_LV_SetImageList),
+    JS_CFUNC_DEF("LV_InsertColumn",   3, js_LV_InsertColumn),
+    JS_CFUNC_DEF("LV_SetColumnWidth", 3, js_LV_SetColumnWidth),
+    JS_CFUNC_DEF("LV_SetItemState",   4, js_LV_SetItemState),
+
+    // ListView styles (lvStyle)
+    JS_PROP_INT32_DEF("LVS_REPORT",        LVS_REPORT,        JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_ICON",          LVS_ICON,          JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_LIST",          LVS_LIST,          JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_SMALLICON",     LVS_SMALLICON,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_SINGLESEL",     LVS_SINGLESEL,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_SHOWSELALWAYS", LVS_SHOWSELALWAYS, JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_OWNERDATA",     LVS_OWNERDATA,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_NOCOLUMNHEADER",LVS_NOCOLUMNHEADER,JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_NOSORTHEADER",  LVS_NOSORTHEADER,  JS_PROP_CONFIGURABLE),
+
+    // ListView extended styles (lvExStyle)
+    JS_PROP_INT32_DEF("LVS_EX_FULLROWSELECT",  LVS_EX_FULLROWSELECT,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_EX_DOUBLEBUFFER",   LVS_EX_DOUBLEBUFFER,   JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_EX_CHECKBOXES",     LVS_EX_CHECKBOXES,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_EX_GRIDLINES",      LVS_EX_GRIDLINES,      JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_EX_HEADERDRAGDROP", LVS_EX_HEADERDRAGDROP, JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_EX_SUBITEMIMAGES",  LVS_EX_SUBITEMIMAGES,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVS_EX_INFOTIP",        LVS_EX_INFOTIP,        JS_PROP_CONFIGURABLE),
+
+    // ListView column align
+    JS_PROP_INT32_DEF("LVCFMT_LEFT",   LVCFMT_LEFT,   JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVCFMT_RIGHT",  LVCFMT_RIGHT,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVCFMT_CENTER", LVCFMT_CENTER, JS_PROP_CONFIGURABLE),
+
+    // ListView image list types
+    JS_PROP_INT32_DEF("LVSIL_NORMAL", LVSIL_NORMAL, JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVSIL_SMALL",  LVSIL_SMALL,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVSIL_STATE",  LVSIL_STATE,  JS_PROP_CONFIGURABLE),
+
+    // ListView item state
+    JS_PROP_INT32_DEF("LVIS_SELECTED",  LVIS_SELECTED,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("LVIS_FOCUSED",   LVIS_FOCUSED,   JS_PROP_CONFIGURABLE),
 
     // Dark mode
     JS_CFUNC_DEF("isDarkMode",            0, js_isDarkMode),

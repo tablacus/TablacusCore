@@ -152,6 +152,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     *(FARPROC*)&_RegenerateUserEnvironment = GetProcAddress(hDll, "RegenerateUserEnvironment");
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    // OleInitialize is required for drag-and-drop support.
+    // It calls CoInitializeEx internally so the above call is redundant
+    // but harmless; keep it for clarity.
+    OleInitialize(nullptr);
 
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_pWICFactory));
 
