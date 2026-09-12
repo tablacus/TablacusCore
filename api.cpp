@@ -498,9 +498,17 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_LBUTTONDOWN:
+        g_ptMouseDown = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+		::ClientToScreen(hwnd, &g_ptMouseDown);
+        HWND hwndReal;
+        hwndReal = WindowFromPoint(g_ptMouseDown);
+        if (hwndReal && hwndReal != hwnd) {
+			hwnd = hwndReal;
+            ::ScreenToClient(hwnd, &g_ptMouseDown);
+			lParam = MAKELPARAM(g_ptMouseDown.x, g_ptMouseDown.y);
+        }
         g_hwndActiveMouse = hwnd;
-        g_ptMouseDown.x = GET_X_LPARAM(lParam);
-        g_ptMouseDown.y = GET_Y_LPARAM(lParam);
+        g_ptMouseDown = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         SetCapture(hwnd);
         if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
             return 0;
