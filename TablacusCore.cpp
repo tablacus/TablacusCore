@@ -52,6 +52,9 @@ extern LPCWSTR g_strException;
 
 JSContext* g_ctx;
 
+// Defined in api.cpp
+extern HWND g_hwndTimer;
+
 std::unordered_map<DWORD, HHOOK> g_umCBTHook;
 
 #ifdef _WINDLL

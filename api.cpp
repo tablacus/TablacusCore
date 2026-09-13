@@ -11,6 +11,50 @@ JSClassID g_class_id = 0;
 JSClassID g_cfolderitem_class_id = 0;
 JSClassID g_image_class_id = 0;
 JSClassID g_imagelist_class_id = 0;
+
+// ── Timer (setTimeout/clearTimeout) ──────────────────────────────────────
+struct TimerEntry { JSContext* ctx; JSValue callback; };
+static std::unordered_map<UINT_PTR, TimerEntry> g_timers;
+static HWND g_hwndTimer = nullptr;
+
+VOID CALLBACK FireTimerCallback(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
+{
+    auto it = g_timers.find(idEvent);
+    if (it == g_timers.end()) return;
+    TimerEntry entry = it->second;
+    g_timers.erase(it);
+    KillTimer(g_hwndTimer, idEvent);
+    JSValue ret = JS_Call(entry.ctx, entry.callback, JS_UNDEFINED, 0, nullptr);
+    JS_FreeValue(entry.ctx, ret);
+    JS_FreeValue(entry.ctx, entry.callback);
+    JSContext* pctx = nullptr;
+    while (JS_ExecutePendingJob(JS_GetRuntime(entry.ctx), &pctx) > 0) {}
+}
+
+static JSValue js_setTimeout(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    if (!JS_IsFunction(ctx, argv[0])) return JS_UNDEFINED;
+    int32_t ms = 0;
+    if (argc >= 2) JS_ToInt32(ctx, &ms, argv[1]);
+    static UINT_PTR s_id = 10000;
+    UINT_PTR id = s_id++;
+    g_timers[id] = { ctx, JS_DupValue(ctx, argv[0]) };
+    SetTimer(g_hwndTimer, id, (UINT)max(ms, 1), FireTimerCallback);
+    return JS_NewInt32(ctx, (int32_t)id);
+}
+
+static JSValue js_clearTimeout(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
+{
+    int32_t id = 0; JS_ToInt32(ctx, &id, argv[0]);
+    auto it = g_timers.find((UINT_PTR)id);
+    if (it != g_timers.end()) {
+        KillTimer(g_hwndTimer, (UINT_PTR)id);
+        JS_FreeValue(ctx, it->second.callback);
+        g_timers.erase(it);
+    }
+    return JS_UNDEFINED;
+}
+// ─────────────────────────────────────────────────────────────────────────
 static std::unordered_map<std::wstring, UIElement*> g_idMap;
 static HWND g_hwndActiveMouse = nullptr;
 static POINT g_ptMouseDown = {};
@@ -1366,6 +1410,7 @@ JSValue js_CreateWindow(JSContext* ctx,
         "getElementById",
         JS_NewCFunction(ctx, js_getElementById, "getElementById", 1)
     );
+    if (!g_hwndTimer) g_hwndTimer = hwnd;
     return obj;
 }
 
@@ -2586,6 +2631,8 @@ static const JSCFunctionListEntry js_api_funcs[] = {
 
     JS_CFUNC_DEF("ShowWindow",    2, js_ShowWindow),
     JS_CFUNC_DEF("UpdateWindow",  1, js_UpdateWindow),
+    JS_CFUNC_DEF("setTimeout",    2, js_setTimeout),
+    JS_CFUNC_DEF("clearTimeout",  1, js_clearTimeout),
     JS_CFUNC_DEF("SetWindowPos",  5, js_SetWindowPos),
 
     // ShowWindow flags
