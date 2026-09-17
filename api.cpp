@@ -875,6 +875,22 @@ void CommonSettings(HWND hwnd, JSContext* ctx, JSValue& obj, JSValue& opts)
             "show", 0)
     );
 
+    // ===== hide(): hide the window =====
+    JS_SetPropertyStr(ctx, obj, "hide",
+        JS_NewCFunction(ctx,
+            [](JSContext* ctx, JSValueConst this_val,
+                int argc, JSValueConst* argv) -> JSValue {
+
+        UIElement* el = get_element(this_val);
+        if (!el) {
+            return JS_EXCEPTION;
+        }
+        ShowWindow(el->hwnd, SW_HIDE);
+        return JS_UNDEFINED;
+    },
+            "hide", 0)
+    );
+
     JSAtom atom = JS_NewAtom(ctx, "text");
 
     JS_DefinePropertyGetSet(
@@ -1520,6 +1536,26 @@ JSValue js_UpdateWindow(JSContext* ctx,
     return JS_NewBool(ctx, UpdateWindow((HWND)hwnd));
 }
 
+// api.SendMessage(hwnd, msg, wParam?, lParam?) -- generic SendMessage wrapper,
+// usable for WM_SETREDRAW and any other message.
+JSValue js_SendMessage(JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+    int32_t msg = 0;  JS_ToInt32(ctx, &msg, argv[1]);
+
+    int64_t wParam = 0;
+    if (argc >= 3 && !JS_IsUndefined(argv[2])) JS_ToInt64Ex(ctx, &wParam, argv[2]);
+
+    int64_t lParam = 0;
+    if (argc >= 4 && !JS_IsUndefined(argv[3])) JS_ToInt64Ex(ctx, &lParam, argv[3]);
+
+    LRESULT result = SendMessage((HWND)hwnd, (UINT)msg, (WPARAM)wParam, (LPARAM)lParam);
+    return JS_NewBigInt64(ctx, (int64_t)result);
+}
+
 // Helper: convert a Win32 RECT to a JS object { left, top, right, bottom }
 static JSValue RectToJS(JSContext* ctx, const RECT& rc)
 {
@@ -1701,6 +1737,31 @@ static JSValue js_InvalidateRect(JSContext* ctx,
         InvalidateRect((HWND)hwnd, nullptr, TRUE);
     }
     return JS_UNDEFINED;
+}
+
+// api.RedrawWindow(hwnd, rc?, hrgn, flags)
+static JSValue js_RedrawWindow(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    int64_t hwnd = 0; JS_ToInt64Ex(ctx, &hwnd, argv[0]);
+
+    RECT rc{};
+    LPRECT prc = nullptr;
+    if (argc >= 2 && !JS_IsUndefined(argv[1]) && !JS_IsNull(argv[1])) {
+        JSToRect(ctx, argv[1], rc);
+        prc = &rc;
+    }
+
+    int64_t hrgn = 0;
+    if (argc >= 3 && !JS_IsUndefined(argv[2]) && !JS_IsNull(argv[2])) {
+        JS_ToInt64Ex(ctx, &hrgn, argv[2]);
+    }
+
+    int32_t flags = RDW_INVALIDATE | RDW_ERASE;
+    if (argc >= 4 && !JS_IsUndefined(argv[3])) JS_ToInt32(ctx, &flags, argv[3]);
+
+    return JS_NewBool(ctx,
+        RedrawWindow((HWND)hwnd, prc, (HRGN)hrgn, (UINT)flags));
 }
 
 // api.SHAutoComplete(hwnd, flags?)
@@ -2631,6 +2692,7 @@ static const JSCFunctionListEntry js_api_funcs[] = {
 
     JS_CFUNC_DEF("ShowWindow",    2, js_ShowWindow),
     JS_CFUNC_DEF("UpdateWindow",  1, js_UpdateWindow),
+    JS_CFUNC_DEF("SendMessage",   4, js_SendMessage),
     JS_CFUNC_DEF("setTimeout",    2, js_setTimeout),
     JS_CFUNC_DEF("clearTimeout",  1, js_clearTimeout),
     JS_CFUNC_DEF("SetWindowPos",  5, js_SetWindowPos),
@@ -2763,6 +2825,29 @@ static const JSCFunctionListEntry js_api_funcs[] = {
     JS_CFUNC_DEF("GetWindowFont",  1, js_GetWindowFont),
     JS_CFUNC_DEF("SelectFont",     2, js_SelectFont),
     JS_CFUNC_DEF("InvalidateRect", 1, js_InvalidateRect),
+    JS_CFUNC_DEF("RedrawWindow",   1, js_RedrawWindow),
+
+    // RedrawWindow flags
+    // Window messages (for use with api.SendMessage)
+    JS_PROP_INT32_DEF("WM_SETREDRAW",  WM_SETREDRAW,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("WM_PAINT",      WM_PAINT,      JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("WM_NCPAINT",    WM_NCPAINT,    JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("WM_ERASEBKGND", WM_ERASEBKGND, JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("WM_SETFONT",    WM_SETFONT,    JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("WM_USER",       WM_USER,       JS_PROP_CONFIGURABLE),
+
+    JS_PROP_INT32_DEF("RDW_INVALIDATE",     RDW_INVALIDATE,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_INTERNALPAINT",  RDW_INTERNALPAINT,  JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_ERASE",          RDW_ERASE,          JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_VALIDATE",       RDW_VALIDATE,       JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_NOINTERNALPAINT",RDW_NOINTERNALPAINT,JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_NOERASE",        RDW_NOERASE,        JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_NOCHILDREN",     RDW_NOCHILDREN,     JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_ALLCHILDREN",    RDW_ALLCHILDREN,    JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_UPDATENOW",      RDW_UPDATENOW,      JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_ERASENOW",       RDW_ERASENOW,       JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_FRAME",          RDW_FRAME,          JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("RDW_NOFRAME",        RDW_NOFRAME,        JS_PROP_CONFIGURABLE),
     JS_CFUNC_DEF("GetClientRect",         1, js_GetClientRect),
     JS_CFUNC_DEF("SHAutoComplete",        1, js_SHAutoComplete),
 

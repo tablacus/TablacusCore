@@ -126,11 +126,16 @@ stat._text = "Ready";
 // tabContents: Map<tabId, { toolbar, edit, exp }>
 const tabContents = new Map();
 
-function showControls(content, visible) {
-    const sw = visible ? api.SW_SHOW : api.SW_HIDE;
-    if (content.toolbar) api.ShowWindow(content.toolbar.hwnd, sw);
-    if (content.edit)    api.ShowWindow(content.edit.hwnd,    sw);
-    if (content.exp)     api.ShowWindow(content.exp.hwnd,     sw);
+function showControls(content) {
+    content.toolbar?.show();
+    content.edit?.show();
+    content.exp?.show();
+}
+
+function hideControls(content) {
+    content.toolbar?.hide();
+    content.edit?.hide();
+    content.exp?.hide();
 }
 
 function createTabContent(tabId) {
@@ -216,19 +221,27 @@ function createTabContent(tabId) {
 let _prevTabId = null;
 
 function activateTab(id) {
-    // Hide previous tab's controls
-    if (_prevTabId !== null && _prevTabId !== id) {
-        const prev = tabContents.get(_prevTabId);
-        if (prev) showControls(prev, false);
-    }
+    const prevId = _prevTabId;
+    _prevTabId = id;
 
-    // Show or create current tab's controls
+    // Show or create current tab's controls first
     let content = tabContents.get(id);
     if (!content) {
         content = createTabContent(id);
     }
-    showControls(content, true);
-    _prevTabId = id;
+
+    // Hide previous tab's controls after a short delay to reduce flicker
+    if (prevId !== null && prevId !== id) {
+        const prev = tabContents.get(prevId);
+        if (prev) {
+            api.SendMessage(window.hwnd, api.WM_SETREDRAW, 0, 0);
+            hideControls(prev);
+        }
+    }
+
+    showControls(content);
+    api.SendMessage(window.hwnd, api.WM_SETREDRAW, 1, 0);
+    api.RedrawWindow(window.hwnd, null, 0, api.RDW_NOERASE | api.RDW_INVALIDATE | api.RDW_ALLCHILDREN);
 
     // Sync UI
     const folder = content.exp?.currentFolder;
@@ -237,6 +250,10 @@ function activateTab(id) {
         window.text = folder.name;
         stat._text  = folder.parsingPath;
     }
+
+    // Turn redraw back on after a short delay, then repaint
+    api.setTimeout(() => {
+    }, 50);
 }
 
 function closeTab(id) {
@@ -244,7 +261,7 @@ function closeTab(id) {
     if (content) {
         // Controls are not destroyed (Win32 handles lifetime with parent window)
         // Just hide them; GC will clean up JS side
-        showControls(content, false);
+        hideControls(content);
         tabContents.delete(id);
     }
     tabbar.removeTab(id);
