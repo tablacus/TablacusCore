@@ -43,44 +43,49 @@ function showDropdown(e, buildMenu, onSelect) {
 }
 
 // ── Layout constants ──────────────────────────────────────────────────────
-const WIN_W    = 800;
-const WIN_H    = 600;
+// controls once. After that, clientW / clientH track the window's current
+// client area and every control is re-measured against them in layout().
 const MENUBAR_H = 22;
 const TOOLBAR_H = 26;
 const ADDR_H    = 22;
-const STATUS_H  = 20;
-const STATUS_Y  = WIN_H - STATUS_H;
+
+let rc = api.GetClientRect(window.hwnd);
+let clientW = rc.right - rc.left;
+let clientH = rc.bottom - rc.top;
 
 // ── Menu bar (fixed) ──────────────────────────────────────────────────────
 const menubar = window.createElement("TOOLBAR", {
-    y: 0, height: MENUBAR_H, width: WIN_W,
+    y: 0, height: MENUBAR_H, width: clientW,
     buttonWidth: 0, buttonHeight: 0,
     showArrows: false,
     buttons: [
-        { id: 10, text: "ファイル", style: api.BTNS_DROPDOWN },
-        { id: 20, text: "編集",     style: api.BTNS_DROPDOWN },
-        { id: 30, text: "表示",     style: api.BTNS_DROPDOWN },
-        { id: 40, text: "ヘルプ",   style: api.BTNS_DROPDOWN },
+        { id: 10, text: "File", style: api.BTNS_DROPDOWN },
+        { id: 20, text: "Edit",     style: api.BTNS_DROPDOWN },
+        { id: 30, text: "View",     style: api.BTNS_DROPDOWN },
+        { id: 40, text: "Help",   style: api.BTNS_DROPDOWN },
     ],
     listeners: {
         dropdown: [(e) => {
             showDropdown(e, (buttonId) => {
                 const menu = api.CreatePopupMenu();
                 if (buttonId === 10) {
-                    menu.append(menuItem(1001, "新しいタブ",   iFolder));
+                    menu.append(menuItem(1001, "New tab",   iFolder));
                     menu.append({ separator: true });
-                    menu.append(menuItem(1002, "終了",         iDrive));
+                    menu.append(menuItem(1002, "Exit",         iDrive));
                 } else if (buttonId === 20) {
-                    menu.append(menuItem(2001, "コピー",       iFolder));
-                    menu.append(menuItem(2002, "貼り付け",     iFolder));
+                    menu.append(menuItem(2001, "Copy",       iFolder));
+                    menu.append(menuItem(2002, "Paste",     iFolder));
                 } else if (buttonId === 30) {
-                    menu.append(menuItem(3001, "ツールバー",   iFolder));
+                    menu.append(menuItem(3001, "Toolbar",   iFolder));
                 } else if (buttonId === 40) {
-                    menu.append(menuItem(4001, "バージョン情報", iFolder));
+                    menu.append(menuItem(4001, "Version Information", iFolder));
                 } else { menu.destroy(); return null; }
                 return menu;
             }, (id) => {
-                if (id === 1001) tabbar.addTab("新しいタブ", iFolder);
+                if (id === 1001) {
+                    tabbar.addTab("New tab", iFolder);
+                    layout();
+                }
             });
         }],
     }
@@ -89,7 +94,7 @@ const menubar = window.createElement("TOOLBAR", {
 // ── TabBar (fixed) ────────────────────────────────────────────────────────
 const TAB_Y = MENUBAR_H;
 const tabbar = new TabBar(window, {
-    y: TAB_Y, width: WIN_W,
+    y: TAB_Y, width: clientW,
     imageList: sysIL,
     dark: darkMode,
     listeners: {
@@ -99,28 +104,18 @@ const tabbar = new TabBar(window, {
 });
 
 // ── Tab content area geometry (computed after tabbar) ─────────────────────
-const CONTENT_Y  = TAB_Y + tabbar.height; // top of per-tab controls
-const TOOLBAR_Y  = CONTENT_Y;
-const ADDR_Y     = CONTENT_Y + TOOLBAR_H;
-const CONTENT_EXP_Y = ADDR_Y + ADDR_H;
-const CONTENT_EXP_H = STATUS_Y - CONTENT_EXP_Y;
-
-// ── Status bar (fixed) ────────────────────────────────────────────────────
-const stat = window.createElement("STATIC", {
-    id: "stat",
-    y: STATUS_Y, height: STATUS_H, width: WIN_W,
-    listeners: {
-        paint: [(e) => {
-            const ps = {};
-            const hdc = api.BeginPaint(e.hwnd, ps);
-            api.DrawText({ hdc, text: stat._text || "Ready",
-                rc: ps.rcPaint,
-                format: api.DT_LEFT | api.DT_VCENTER | api.DT_SINGLELINE });
-            api.EndPaint(e.hwnd, ps);
-        }],
-    }
-});
-stat._text = "Ready";
+// Depends on tabbar.height, which can change (multi-row wrapping) whenever
+// the window is resized, so this is a function rather than a fixed const.
+function computeGeom() {
+    const contentY     = TAB_Y + tabbar.height; // top of per-tab controls
+    const toolbarY     = contentY;
+    const addrY        = contentY + TOOLBAR_H;
+    const contentExpY  = addrY + ADDR_H;
+    const contentExpH  = Math.max(0, clientH - contentExpY);
+    return { toolbarY, addrY, contentExpY, contentExpH };
+}
+let { toolbarY: TOOLBAR_Y, addrY: ADDR_Y,
+      contentExpY: CONTENT_EXP_Y, contentExpH: CONTENT_EXP_H } = computeGeom();
 
 // ── Per-tab content management ────────────────────────────────────────────
 // tabContents: Map<tabId, { toolbar, edit, exp }>
@@ -130,9 +125,12 @@ function showControls(content) {
     content.toolbar?.show();
     content.edit?.show();
     content.exp?.show();
+    api.SendMessage(window.hwnd, api.WM_SETREDRAW, 1, 0);
+    api.RedrawWindow(window.hwnd, null, 0, api.RDW_NOERASE | api.RDW_INVALIDATE | api.RDW_ALLCHILDREN);
 }
 
 function hideControls(content) {
+    api.SendMessage(window.hwnd, api.WM_SETREDRAW, 0, 0);
     content.toolbar?.hide();
     content.edit?.hide();
     content.exp?.hide();
@@ -141,7 +139,7 @@ function hideControls(content) {
 function createTabContent(tabId) {
     // ToolBar
     const tb = window.createElement("TOOLBAR", {
-        y: TOOLBAR_Y, height: TOOLBAR_H, width: WIN_W,
+        y: TOOLBAR_Y, height: TOOLBAR_H, width: clientW,
         buttonWidth: 16, buttonHeight: 16,
         imageList: sysIL,
         buttons: [
@@ -162,10 +160,10 @@ function createTabContent(tabId) {
                 showDropdown(e, (buttonId) => {
                     const menu = api.CreatePopupMenu();
                     if (buttonId === 1) {
-                        menu.append(menuItem(101, "← ドキュメント", iFolder));
-                        menu.append(menuItem(102, "← デスクトップ", iFolder));
+                        menu.append(menuItem(101, "← Documents", iFolder));
+                        menu.append(menuItem(102, "← Desktop", iFolder));
                     } else if (buttonId === 2) {
-                        menu.append(menuItem(201, "→ ダウンロード", iFolder));
+                        menu.append(menuItem(201, "→ Downloads", iFolder));
                     } else { menu.destroy(); return null; }
                     return menu;
                 }, (id) => {
@@ -181,8 +179,8 @@ function createTabContent(tabId) {
 
     // Address bar
     const edit = window.createElement("EDIT", {
-        placeholder: "Path or URL",
-        y: ADDR_Y, height: ADDR_H, width: WIN_W,
+        placeholder: "Path",
+        y: ADDR_Y, height: ADDR_H, width: clientW,
         listeners: {
             keydown: (e) => {
                 if (e.key === "Enter") {
@@ -199,17 +197,17 @@ function createTabContent(tabId) {
 
     // ExplorerBrowser
     const exp = window.createElement("EXPLORER", {
-        y: CONTENT_EXP_Y, height: CONTENT_EXP_H, width: WIN_W,
+        y: CONTENT_EXP_Y, height: CONTENT_EXP_H, width: clientW,
         listeners: {
             navigate: (e) => {
-                // Only update UI if this tab is active
-                if (tabbar._activeId !== tabId) return;
                 const folder = e.target.currentFolder;
-                edit.text  = folder.path;
-                window.text = folder.name;
-                stat._text  = folder.parsingPath;
-                tabbar.setLabel(tabId, folder.name || "新しいタブ");
-            },
+                tabbar.setLabel(tabId, folder.name);
+                edit.text = folder.path;
+                // Only update UI if this tab is active
+                if (tabbar._activeId === tabId) {
+                    window.text = folder.name;
+                }
+            }
         }
     });
 
@@ -234,26 +232,18 @@ function activateTab(id) {
     if (prevId !== null && prevId !== id) {
         const prev = tabContents.get(prevId);
         if (prev) {
-            api.SendMessage(window.hwnd, api.WM_SETREDRAW, 0, 0);
             hideControls(prev);
         }
     }
-
     showControls(content);
-    api.SendMessage(window.hwnd, api.WM_SETREDRAW, 1, 0);
-    api.RedrawWindow(window.hwnd, null, 0, api.RDW_NOERASE | api.RDW_INVALIDATE | api.RDW_ALLCHILDREN);
 
     // Sync UI
     const folder = content.exp?.currentFolder;
     if (folder) {
         content.edit.text = folder.path;
         window.text = folder.name;
-        stat._text  = folder.parsingPath;
+        tabbar.setLabel(id, folder.name);
     }
-
-    // Turn redraw back on after a short delay, then repaint
-    api.setTimeout(() => {
-    }, 50);
 }
 
 function closeTab(id) {
@@ -265,9 +255,46 @@ function closeTab(id) {
         tabContents.delete(id);
     }
     tabbar.removeTab(id);
+    layout();
 }
 
+// ── Layout (re-fit all controls to the current client size) ───────────────
+// Called once at startup and every time the window fires "Resize".
+function layout() {
+    const rc = api.GetClientRect(window.hwnd);
+    clientW = rc.right - rc.left;
+    clientH = rc.bottom - rc.top;
+
+    // Menu bar spans the full width, height never changes.
+    api.SetWindowPos(menubar.hwnd, 0, 0, clientW, MENUBAR_H);
+
+    // Tab bar spans the full width; its own height can change if the tabs
+    // wrap onto more/fewer rows at the new width.
+    tabbar.resize(clientW);
+
+    // Everything below the tab bar depends on tabbar.height, so recompute.
+    const geom = computeGeom();
+    TOOLBAR_Y = geom.toolbarY;
+    ADDR_Y = geom.addrY;
+    CONTENT_EXP_Y = geom.contentExpY;
+    CONTENT_EXP_H = geom.contentExpH;
+
+    // Re-fit every tab's controls (not just the active one) so a hidden
+    // tab is already sized correctly the moment it's shown again.
+    for (const c of tabContents.values()) {
+        c.toolbar && api.SetWindowPos(c.toolbar.hwnd, 0, TOOLBAR_Y, clientW, TOOLBAR_H);
+        c.edit    && api.SetWindowPos(c.edit.hwnd,    0, ADDR_Y,    clientW, ADDR_H);
+        c.exp     && api.SetWindowPos(c.exp.hwnd,     0, CONTENT_EXP_Y, clientW, CONTENT_EXP_H);
+    }
+}
+
+window.listeners.Resize = [() => layout()];
+
 // ── Initial tabs ──────────────────────────────────────────────────────────
-const tab1 = tabbar.addTab("新しいタブ", iFolder);
+const tab1 = tabbar.addTab("New tab", iFolder);
 // First tab is activated automatically by TabBar's select listener
 activateTab(tab1);
+
+// Sync geometry with the window's actual client rect once at startup too
+// (covers DPI/border differences from the requested 800x600).
+layout();

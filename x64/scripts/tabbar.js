@@ -127,6 +127,21 @@ export class TabBar {
 
     get hwnd()   { return this._panel.hwnd; }
     get height() { return this._height; }
+    get width()  { return this._width; }
+
+    // resize(width) - call when the parent window's client width changes.
+    // Recomputes tab rows for the new width (row count may change, which
+    // changes this._height too) and moves/resizes the underlying panel to
+    // match. Returns the new height so the caller can re-flow controls
+    // that sit below the tab bar.
+    resize(width) {
+        this._width = width;
+        this._layout(); // may update this._height (multi-row wrapping)
+        api.SetWindowPos(this._panel.hwnd, 0, this._y, this._width, this._height,
+            api.SWP_NOZORDER | api.SWP_NOACTIVATE);
+        this._redraw();
+        return this._height;
+    }
 
     // ── Internal event firing ─────────────────────────────────────────────
 
