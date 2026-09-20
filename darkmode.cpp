@@ -269,9 +269,7 @@ LRESULT CALLBACK TEDlgLVProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, 
 			//FillRect((HDC)wParam, &rc, g_hbrDarkBackground);
 			return 1;
 		case LVM_SETSELECTEDCOLUMN:
-			if (g_bDarkMode) {
-				wParam = -1;
-			}
+			wParam = -1;
 			break;
 		case WM_NOTIFY:
 			if (g_bDarkMode) {
@@ -480,12 +478,12 @@ VOID FixChild(HWND hwnd, HWND hwnd1) {
 				SetWindowSubclass(hwnd1, TEDlgLVProc, (UINT_PTR)TEDlgLVProc, 0);
 				g_umDlgProc[hwnd1] = hwnd;
 			}
-			ListView_SetSelectedColumn(hwnd1, -1);
 		}
+		ListView_SetSelectedColumn(hwnd1, -1);
 	}
 	else if (::PathMatchSpecA(pszClassA, TOOLBARCLASSNAMEA)) {
 		::SetWindowTheme(hwnd1,
-			g_bDarkMode ? L"DarkMode_Navigator" : nullptr, nullptr);
+			g_bDarkMode ? L"darkmode_navigator" : nullptr, nullptr);
 		if (_AllowDarkModeForWindow) {
 			_AllowDarkModeForWindow(hwnd1, g_bDarkMode);
 		}
@@ -508,22 +506,19 @@ VOID FixChild(HWND hwnd, HWND hwnd1) {
 			}
 		}
 	}
-	/*if (lstrcmpiA(pszClassA, "DirectUIHWND") == 0) {
-	SetWindowTheme(hwnd1, g_bDarkMode ? L"darkmode_explorer" : L"explorer", nullptr);
-	if (_AllowDarkModeForWindow) {
-	_AllowDarkModeForWindow(hwnd1, g_bDarkMode);
+	else if (::PathMatchSpecA(pszClassA, "DUIViewWndClassName;DirectUIHWND")) {
+		::SetWindowTheme(hwnd1, nullptr, nullptr);
+		::SendMessage(hwnd1, WM_THEMECHANGED, 0, 0);
 	}
-	}*/
 }
 
 VOID FixChildren(HWND hwnd)
 {
 	HWND hwnd1 = nullptr;
 	while (hwnd1 = ::FindWindowEx(hwnd, hwnd1, nullptr, nullptr)) {
-		if (::GetWindowTheme(hwnd)) {
-			break;
+		if (!::GetWindowTheme(hwnd)) {
+			FixChild(hwnd, hwnd1);
 		}
-		FixChild(hwnd, hwnd1);
 		FixChildren(hwnd1);
 	}
 }

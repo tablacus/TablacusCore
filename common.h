@@ -100,6 +100,7 @@ public:
     VOID SetRedraw(BOOL bRedraw);
     VOID SetFolderFlags(BOOL bGetIconSize);
     VOID GetShellFolderView();
+    VOID FixColumnEmphasis();
 };
 
 struct UIElement  {

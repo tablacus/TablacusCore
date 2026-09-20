@@ -1514,6 +1514,83 @@ static JSValue js_SetWindowPos(JSContext* ctx,
         SetWindowPos((HWND)hwnd, nullptr, x, y, w, h, (UINT)flags));
 }
 
+// api.ReplaceFile(replacedFileName, replacementFileName, backupFileName, flags?)
+//
+// Thin wrapper around the Win32 ReplaceFileW API, intended for safe/atomic
+// file saves: write the new content to a temporary file first, then let
+// ReplaceFile swap it into place. On NTFS this swap is atomic, so a crash
+// or power loss either leaves the original file untouched or fully
+// replaced -- never a half-written file.
+//
+// Typical usage from script:
+//   api.ReplaceFile(path, path + ".tmp", path + ".bak", api.REPLACEFILE_WRITE_THROUGH);
+//
+// Arguments map 1:1 to the Win32 parameters:
+//   replacedFileName    - the existing file being replaced (the real target).
+//   replacementFileName - the new file whose contents take over; consumed
+//                         by the call (Windows deletes it on success).
+//   backupFileName      - optional; if given, the original replacedFileName
+//                         is preserved here before being overwritten. Pass
+//                         null/undefined to discard the original instead.
+//   flags               - optional bitwise OR of REPLACEFILE_* values.
+//
+// lpExclude/lpReserved are always passed as nullptr: Win32 documents them
+// as reserved for future use and requires them to be NULL today.
+// Returns true on success; throws on failure so the caller can inspect the
+// underlying GetLastError() code.
+static JSValue js_ReplaceFile(JSContext* ctx,
+    JSValueConst, int argc, JSValueConst* argv)
+{
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "ReplaceFile requires at least 2 arguments");
+    }
+
+    // replacedFileName and replacementFileName are mandatory paths.
+    WStrNullable replaced;
+    if (!JS_ToWStrNullable(ctx, argv[0], replaced)) {
+        return JS_EXCEPTION;
+    }
+    if (!replaced.ptr) {
+        return JS_ThrowTypeError(ctx, "ReplaceFile: replacedFileName must be a string");
+    }
+    WStrNullable replacement;
+    if (!JS_ToWStrNullable(ctx, argv[1], replacement)) {
+        return JS_EXCEPTION;
+    }
+    if (!replacement.ptr) {
+        return JS_ThrowTypeError(ctx, "ReplaceFile: replacementFileName must be a string");
+    }
+
+    // backupFileName is optional; null/undefined means "no backup kept".
+    WStrNullable backup;
+    if (argc >= 3) {
+        if (!JS_ToWStrNullable(ctx, argv[2], backup)) {
+            return JS_EXCEPTION;
+        }
+    }
+
+    DWORD flags = 0;
+    if (argc >= 4 && !JS_IsUndefined(argv[3])) {
+        int32_t f = 0;
+        JS_ToInt32(ctx, &f, argv[3]);
+        flags = (DWORD)f;
+    }
+
+    BOOL ok = ReplaceFileW(
+        replaced.ptr,
+        replacement.ptr,
+        backup.ptr,
+        flags,
+        nullptr, // lpExclude - reserved, must be NULL
+        nullptr  // lpReserved - reserved, must be NULL
+    );
+
+    if (!ok) {
+        return JS_ThrowInternalError(ctx, "ReplaceFile failed: %lu", GetLastError());
+    }
+    return JS_NewBool(ctx, true);
+}
+
 JSValue js_ShowWindow(JSContext* ctx,
     JSValueConst this_val,
     int argc,
@@ -2707,6 +2784,14 @@ static const JSCFunctionListEntry js_api_funcs[] = {
     JS_PROP_INT32_DEF("SWP_NOACTIVATE",  SWP_NOACTIVATE,  JS_PROP_CONFIGURABLE),
     JS_PROP_INT32_DEF("SWP_NOMOVE",      SWP_NOMOVE,      JS_PROP_CONFIGURABLE),
     JS_PROP_INT32_DEF("SWP_NOSIZE",      SWP_NOSIZE,      JS_PROP_CONFIGURABLE),
+
+    // File API
+    JS_CFUNC_DEF("ReplaceFile", 3, js_ReplaceFile),
+
+    // ReplaceFile flags
+    JS_PROP_INT32_DEF("REPLACEFILE_WRITE_THROUGH",       REPLACEFILE_WRITE_THROUGH,       JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("REPLACEFILE_IGNORE_MERGE_ERRORS", REPLACEFILE_IGNORE_MERGE_ERRORS, JS_PROP_CONFIGURABLE),
+    JS_PROP_INT32_DEF("REPLACEFILE_IGNORE_ACL_ERRORS",   REPLACEFILE_IGNORE_ACL_ERRORS,   JS_PROP_CONFIGURABLE),
 
     // ListView API
     JS_CFUNC_DEF("LV_InsertItem",     2, js_LV_InsertItem),

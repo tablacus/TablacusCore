@@ -17,8 +17,8 @@ std::wstring g_scriptDir;                       // directory containing main.js
 static char* js_module_normalize(JSContext* ctx,
     const char* base_name, const char* name, void* opaque)
 {
-    // "api" is a built-in, pass through as-is
-    if (strcmp(name, "api") == 0)
+    // "api" / "fs" are built-ins, pass through as-is
+    if (strcmp(name, "api") == 0 || strcmp(name, "fs") == 0)
         return js_strdup(ctx, name);
 
     // Build absolute path: start from base_name's directory
@@ -72,6 +72,9 @@ JSModuleDef* js_module_loader(JSContext* ctx,
     void* opaque) {
     if (strcmp(module_name, "api") == 0) {
         return js_init_module_api(ctx, module_name);
+    }
+    if (strcmp(module_name, "fs") == 0) {
+        return js_init_module_fs(ctx, module_name);
     }
 
     // Load JS file modules relative to the scripts directory
@@ -386,6 +389,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         }*/
         teGetDarkMode();
         teSetDarkMode(hwnd);
+        FixChildren(hwnd);
         CHAR pszClassA[MAX_CLASS_NAME];
         for (auto itr = g_umDlgProc.begin(); itr != g_umDlgProc.end(); ++itr) {
             GetClassNameA(itr->second, pszClassA, MAX_CLASS_NAME);
@@ -409,6 +413,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 #endif
             }
         }
+        ::RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+        break;
     case WM_DESTROY:
         PostQuitMessage(0);
         break;

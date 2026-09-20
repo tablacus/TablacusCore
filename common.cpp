@@ -756,6 +756,7 @@ STDMETHODIMP CBrowserSink::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, W
 {
     switch (dispIdMember) {
         case DISPID_SORTDONE://XP-
+            FixColumnEmphasis();
             return S_OK;
         case DISPID_FILELISTENUMDONE://XP+
             return S_OK;
@@ -771,6 +772,13 @@ VOID CBrowserSink::GetShellFolderView()
         teAdvise(m_pdisp, DIID_DShellFolderViewEvents, static_cast<IDispatch*>(this), &m_dwCookie);
     } else {
         m_pdisp = NULL;
+    }
+}
+
+VOID CBrowserSink::FixColumnEmphasis()
+{
+    if (m_hwndLV && (int)ListView_GetSelectedColumn(m_hwndLV) >= 0) {
+        ListView_SetSelectedColumn(m_hwndLV, -1);
     }
 }
 

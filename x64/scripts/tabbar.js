@@ -39,8 +39,6 @@ export class TabBar {
         this._hotClose  = -1;
         this._tabRects  = [];
         this._imageList = opts.imageList || null;
-        this._dark      = opts.dark || false;
-        this._CLR       = this._dark ? DARK_CLR : LIGHT_CLR;
         this._width     = opts.width  || 800;
         this._height    = TAB_H;
         this._y         = opts.y || 0;
@@ -197,7 +195,7 @@ export class TabBar {
         const ps   = {};
         const hdc  = api.BeginPaint(e.hwnd, ps);
         const font = api.GetWindowFont(e.hwnd);
-        const CLR  = this._CLR;
+        const CLR = api.isDarkMode() ? DARK_CLR : LIGHT_CLR;
         const W = this._width, H = this._height;
 
         // Double buffering: draw into an offscreen DC then BitBlt to screen
@@ -230,7 +228,7 @@ export class TabBar {
         const tab = this._tabs[i];
         const rc  = this._tabRects[i];
         if (!rc) return;
-        const CLR      = this._CLR;
+        const CLR      = api.isDarkMode() ? DARK_CLR : LIGHT_CLR;
         const isActive = tab.id === this._activeId;
         const isHot    = i === this._hotIndex;
         const isClose  = i === this._hotClose;

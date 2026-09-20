@@ -1,7 +1,5 @@
 import * as api from "api";
 import { TabBar } from "./tabbar.js";
-const { SHGetSystemImageList, SHGetFileIconIndex, isDarkMode } = api;
-const darkMode = isDarkMode();
 
 // ── Window ────────────────────────────────────────────────────────────────
 const window = api.CreateWindow({
@@ -12,14 +10,14 @@ const window = api.CreateWindow({
 window.show();
 
 // ── System ImageList ──────────────────────────────────────────────────────
-const sysIL = SHGetSystemImageList("small");
+const sysIL = api.SHGetSystemImageList("small");
 const SFLAGS = api.SHGFI_SYSICONINDEX | api.SHGFI_SMALLICON;
-const iBack    = SHGetFileIconIndex("C:\\Windows\\System32\\imageres.dll", SFLAGS).index;
-const iForward = SHGetFileIconIndex("C:\\Windows\\System32\\shell32.dll",  SFLAGS).index;
-const iUp      = SHGetFileIconIndex("C:\\Windows",                         SFLAGS).index;
-const iRefresh = SHGetFileIconIndex("C:\\Windows\\System32",               SFLAGS).index;
-const iFolder  = SHGetFileIconIndex("C:\\Users",                           SFLAGS).index;
-const iDrive   = SHGetFileIconIndex("C:\\",                                SFLAGS).index;
+const iBack    = api.SHGetFileIconIndex("C:\\Windows\\System32\\imageres.dll", SFLAGS).index;
+const iForward = api.SHGetFileIconIndex("C:\\Windows\\System32\\shell32.dll",  SFLAGS).index;
+const iUp      = api.SHGetFileIconIndex("C:\\Windows",                         SFLAGS).index;
+const iRefresh = api.SHGetFileIconIndex("C:\\Windows\\System32",               SFLAGS).index;
+const iFolder  = api.SHGetFileIconIndex("C:\\Users",                           SFLAGS).index;
+const iDrive   = api.SHGetFileIconIndex("C:\\",                                SFLAGS).index;
 
 function menuItem(id, text, iconIndex) {
     return { id, text, iconIndex, imageList: sysIL };
@@ -60,9 +58,9 @@ const menubar = window.createElement("TOOLBAR", {
     showArrows: false,
     buttons: [
         { id: 10, text: "File", style: api.BTNS_DROPDOWN },
-        { id: 20, text: "Edit",     style: api.BTNS_DROPDOWN },
-        { id: 30, text: "View",     style: api.BTNS_DROPDOWN },
-        { id: 40, text: "Help",   style: api.BTNS_DROPDOWN },
+        { id: 20, text: "Edit", style: api.BTNS_DROPDOWN },
+        { id: 30, text: "View", style: api.BTNS_DROPDOWN },
+        { id: 40, text: "Help", style: api.BTNS_DROPDOWN },
     ],
     listeners: {
         dropdown: [(e) => {
@@ -96,7 +94,6 @@ const TAB_Y = MENUBAR_H;
 const tabbar = new TabBar(window, {
     y: TAB_Y, width: clientW,
     imageList: sysIL,
-    dark: darkMode,
     listeners: {
         select: [(id) => activateTab(id)],
         close:  [(id) => closeTab(id)],

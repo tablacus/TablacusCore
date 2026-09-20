@@ -9,6 +9,7 @@
 #include <CommCtrl.h>
 #include <locale.h>
 #include "api.h"
+#include "fs.h"
 #include "common.h"
 #include "darkmode.h"
 
