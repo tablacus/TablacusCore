@@ -101,6 +101,8 @@ public:
     VOID SetFolderFlags(BOOL bGetIconSize);
     VOID GetShellFolderView();
     VOID FixColumnEmphasis();
+    VOID SetPropEx();
+    VOID ResetPropEx();
 };
 
 struct UIElement  {

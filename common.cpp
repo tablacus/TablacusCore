@@ -593,7 +593,19 @@ void UnquotePath(std::wstring& path)
 	}
 }
 
-
+LRESULT CALLBACK TELVProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    if (msg == WM_NOTIFY) {
+        LPNMLVCUSTOMDRAW lplvcd = (LPNMLVCUSTOMDRAW)lParam;
+        if (lplvcd->nmcd.hdr.code == NM_CUSTOMDRAW) {
+            if (g_bDarkMode) { //Fix groups in dark background
+                teFixGroup(lplvcd, TECL_DARKBG);
+            }
+        }
+    }
+    DefSubclassProc(hwnd, msg, wParam, lParam);
+    return 0;
+}
 
 CBrowserSink::CBrowserSink(HWND hwnd)
 {
@@ -662,28 +674,14 @@ HRESULT STDMETHODCALLTYPE CBrowserSink::OnNavigationPending(PCIDLIST_ABSOLUTE /*
 
 HRESULT STDMETHODCALLTYPE CBrowserSink::OnViewCreated(IShellView* psv)
 {
-    if (m_hwnd != nullptr)
-    {
+    if (m_hwnd != nullptr) {
         UIElement* el = GetUIElement(m_hwnd);
         if (el != nullptr) {
             SetRedraw(FALSE);
+            SafeRelease(&m_pSV);
             psv->QueryInterface(IID_PPV_ARGS(&m_pSV));
             GetShellFolderView();
-            if (IUnknown_GetWindow(psv, &m_hwndDV) == S_OK) {
-                SetProp(m_hwndDV, L"UIElement", el);
-                FixChildren(m_hwndDV);
-                m_hwndLV = FindWindowExA(m_hwndDV, 0, WC_LISTVIEWA, NULL);
-                if (m_hwndLV) {
-                    SetProp(m_hwndLV, L"UIElement", el);
-				}
-
-                /*                    IFolderView* fv = nullptr;
-
-                                    if (SUCCEEDED(psv->QueryInterface(IID_PPV_ARGS(&fv))))
-                                    {
-                                        el->folderView = fv;
-                                    }*/
-            }
+            SetPropEx();
         }
     }
 
@@ -755,10 +753,15 @@ STDMETHODIMP CBrowserSink::GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT 
 STDMETHODIMP CBrowserSink::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr)
 {
     switch (dispIdMember) {
-        case DISPID_SORTDONE://XP-
+        case DISPID_SORTDONE:
             FixColumnEmphasis();
             return S_OK;
-        case DISPID_FILELISTENUMDONE://XP+
+        case DISPID_VIEWPAINTDONE:
+            FixChildren(m_hwndDV);
+            if (m_hwndLV) {
+                ListView_SetExtendedListViewStyle(m_hwndLV,
+                    ListView_GetExtendedListViewStyle(m_hwndLV) & ~LVS_EX_FULLROWSELECT);
+            }
             return S_OK;
     }
 
@@ -780,6 +783,31 @@ VOID CBrowserSink::FixColumnEmphasis()
     if (m_hwndLV && (int)ListView_GetSelectedColumn(m_hwndLV) >= 0) {
         ListView_SetSelectedColumn(m_hwndLV, -1);
     }
+}
+
+VOID CBrowserSink::SetPropEx()
+{
+    if (IUnknown_GetWindow(m_pSV, &m_hwndDV) == S_OK) {
+        UIElement* el = GetUIElement(m_hwnd);
+        SetProp(m_hwndDV, L"UIElement", el);
+        SetWindowSubclass(m_hwndDV, TELVProc, (UINT_PTR)TELVProc, (DWORD_PTR)this);
+
+        m_hwndLV = FindWindowExA(m_hwndDV, 0, WC_LISTVIEWA, NULL);
+        if (m_hwndLV) {
+            SetProp(m_hwndLV, L"UIElement", el);
+        }
+
+        /*                    IFolderView* fv = nullptr;
+
+                            if (SUCCEEDED(psv->QueryInterface(IID_PPV_ARGS(&fv))))
+                            {
+                                el->folderView = fv;
+                            }*/
+    }
+}
+
+VOID CBrowserSink::ResetPropEx()
+{
 }
 
 // CImage

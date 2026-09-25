@@ -16,7 +16,7 @@ const DARK_CLR = {
     text:       0xDDDDDD,
     textActive: 0xFFFFFF,
     border:     0x555555,
-    activeLine: 0xFF9E4A,
+    activeLine: 0x0088FF,
     closeHot:   0x4444EE,
 };
 const LIGHT_CLR = {
@@ -27,7 +27,7 @@ const LIGHT_CLR = {
     text:       0x000000,
     textActive: 0x000000,
     border:     0xAAAAAA,
-    activeLine: 0xD70078,
+    activeLine: 0x0088FF,
     closeHot:   0x0000CC,
 };
 

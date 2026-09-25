@@ -11,6 +11,7 @@ JSClassID g_class_id = 0;
 JSClassID g_cfolderitem_class_id = 0;
 JSClassID g_image_class_id = 0;
 JSClassID g_imagelist_class_id = 0;
+JSClassID g_cfolderitems_class_id = 0;
 
 // ── Timer (setTimeout/clearTimeout) ──────────────────────────────────────
 struct TimerEntry { JSContext* ctx; JSValue callback; };
@@ -233,6 +234,8 @@ static IShellItem* JS_ToShellItem(
     }
 }
 
+IShellItem* GetCurrentFolder(IExplorerBrowser* pEB);
+
 static JSValue js_navigate(
     JSContext* ctx,
     JSValueConst this_val,
@@ -252,7 +255,28 @@ static JSValue js_navigate(
                 "path or FolderItem expected");
         }
 
-        IShellItem* pItem = JS_ToShellItem(ctx, argv[0]);
+        IShellItem* pItem = nullptr;
+
+        // ".." doesn't resolve through SHCreateItemFromParsingName (it's
+        // not an absolute path the shell namespace understands), so treat
+        // it specially: go to the parent of the folder currently shown.
+        if (JS_IsString(argv[0])) {
+            std::wstring s = JS_ToWideString(ctx, argv[0]);
+
+            if (s == L"..") {
+                IShellItem* pCurrent =
+                    GetCurrentFolder(el->pSink->m_pEB);
+
+                if (pCurrent != nullptr) {
+                    pCurrent->GetParent(&pItem);
+                    pCurrent->Release();
+                }
+            }
+        }
+
+        if (pItem == nullptr) {
+            pItem = JS_ToShellItem(ctx, argv[0]);
+        }
 
         if (pItem == nullptr) {
             return JS_ThrowTypeError(
@@ -442,6 +466,20 @@ int64_t JS_GetPropertyInt64(JSContext* ctx, JSValue opts, const char* name, int6
     return val;
 };
 
+// Native controls such as TOOLBAR track mouse-down/mouse-up and capture
+// internally to detect button presses (including WHOLEDROPDOWN, which
+// fires TBN_DROPDOWN on button-down). The generic capture handling below
+// (for emulating "click" on plain windows) must not run for these, or it
+// releases capture out from under the control before its own
+// WM_LBUTTONUP handling gets a chance to see it — silently breaking
+// normal (non-dropdown) toolbar button clicks.
+static bool IsToolbarWindow(HWND hwnd)
+{
+    wchar_t className[64] = { 0 };
+    GetClassNameW(hwnd, className, ARRAYSIZE(className));
+    return lstrcmpiW(className, TOOLBARCLASSNAME) == 0;
+}
+
 LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -553,7 +591,9 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         g_hwndActiveMouse = hwnd;
         g_ptMouseDown = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        SetCapture(hwnd);
+        if (!IsToolbarWindow(hwnd)) {
+            SetCapture(hwnd);
+        }
         if (FireMouseEvent(hwnd, "mousedown", 0, wParam, lParam)) {
             return 0;
         }
@@ -577,7 +617,9 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     }
     case WM_LBUTTONUP:
-        ReleaseCapture();
+        if (!IsToolbarWindow(hwnd)) {
+            ReleaseCapture();
+        }
         if (FireMouseEvent(hwnd, "mouseup", 0, wParam, lParam)) {
             return 0;
         }
@@ -670,46 +712,53 @@ LRESULT CommonProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             int buttonId = LOWORD(wParam);
             HWND hToolbar = FindWindowExW(hwnd, nullptr, TOOLBARCLASSNAME, nullptr);
             while (hToolbar) {
-                UIElement* el = GetUIElement(hToolbar);
-                if (el) {
-                    JSContext* ctx = el->ctx;
+                // Multiple sibling toolbars can exist under the same parent
+                // (e.g. one per tab). The first one found isn't necessarily
+                // the one the button belongs to, so only proceed with a
+                // toolbar that actually owns this button id.
+                int btnIndex = (int)SendMessage(hToolbar,
+                    TB_COMMANDTOINDEX, buttonId, 0);
 
-                    // Check if this button has BTNS_DROPDOWN style.
-                    // If so (and showArrows is false), fire "dropdown" instead of "click"
-                    // so the full button acts like a menu bar item.
-                    int btnIndex = (int)SendMessage(hToolbar,
-                        TB_COMMANDTOINDEX, buttonId, 0);
-                    TBBUTTON tbb{};
-                    SendMessage(hToolbar, TB_GETBUTTON, btnIndex, (LPARAM)&tbb);
+                if (btnIndex != -1) {
+                    UIElement* el = GetUIElement(hToolbar);
+                    if (el) {
+                        JSContext* ctx = el->ctx;
 
-                    bool isDropdown = (tbb.fsStyle & BTNS_DROPDOWN) &&
-                                     !(tbb.fsStyle & BTNS_WHOLEDROPDOWN);
+                        // Check if this button has BTNS_DROPDOWN style.
+                        // If so (and showArrows is false), fire "dropdown" instead of "click"
+                        // so the full button acts like a menu bar item.
+                        TBBUTTON tbb{};
+                        SendMessage(hToolbar, TB_GETBUTTON, btnIndex, (LPARAM)&tbb);
 
-                    if (isDropdown) {
-                        // Get button rect in screen coords for menu placement
-                        RECT rc{};
-                        SendMessage(hToolbar, TB_GETRECT, buttonId, (LPARAM)&rc);
-                        MapWindowPoints(hToolbar, HWND_DESKTOP, (POINT*)&rc, 2);
+                        bool isDropdown = (tbb.fsStyle & BTNS_DROPDOWN) &&
+                                         !(tbb.fsStyle & BTNS_WHOLEDROPDOWN);
 
-                        JSValue e = JS_NewObject(ctx);
-                        JS_SetPropertyStr(ctx, e, "hwnd",
-                            JS_NewBigInt64(ctx, (int64_t)hToolbar));
-                        JS_SetPropertyStr(ctx, e, "buttonId",
-                            JS_NewInt32(ctx, buttonId));
-                        JS_SetPropertyStr(ctx, e, "x",
-                            JS_NewInt32(ctx, rc.left));
-                        JS_SetPropertyStr(ctx, e, "y",
-                            JS_NewInt32(ctx, rc.bottom));
-                        FireEvent(hToolbar, "dropdown", e);
-                    } else {
-                        JSValue e = JS_NewObject(ctx);
-                        JS_SetPropertyStr(ctx, e, "hwnd",
-                            JS_NewBigInt64(ctx, (int64_t)hToolbar));
-                        JS_SetPropertyStr(ctx, e, "buttonId",
-                            JS_NewInt32(ctx, buttonId));
-                        FireEvent(hToolbar, "click", e);
+                        if (isDropdown) {
+                            // Get button rect in screen coords for menu placement
+                            RECT rc{};
+                            SendMessage(hToolbar, TB_GETRECT, buttonId, (LPARAM)&rc);
+                            MapWindowPoints(hToolbar, HWND_DESKTOP, (POINT*)&rc, 2);
+
+                            JSValue e = JS_NewObject(ctx);
+                            JS_SetPropertyStr(ctx, e, "hwnd",
+                                JS_NewBigInt64(ctx, (int64_t)hToolbar));
+                            JS_SetPropertyStr(ctx, e, "buttonId",
+                                JS_NewInt32(ctx, buttonId));
+                            JS_SetPropertyStr(ctx, e, "x",
+                                JS_NewInt32(ctx, rc.left));
+                            JS_SetPropertyStr(ctx, e, "y",
+                                JS_NewInt32(ctx, rc.bottom));
+                            FireEvent(hToolbar, "dropdown", e);
+                        } else {
+                            JSValue e = JS_NewObject(ctx);
+                            JS_SetPropertyStr(ctx, e, "hwnd",
+                                JS_NewBigInt64(ctx, (int64_t)hToolbar));
+                            JS_SetPropertyStr(ctx, e, "buttonId",
+                                JS_NewInt32(ctx, buttonId));
+                            FireEvent(hToolbar, "click", e);
+                        }
+                        return 0;
                     }
-                    return 0;
                 }
                 hToolbar = FindWindowExW(hwnd, hToolbar, TOOLBARCLASSNAME, nullptr);
             }
@@ -1337,6 +1386,21 @@ JSValue js_createElement(JSContext* ctx, JSValueConst this_val,
                 js_navigate,
                 "navigate",
                 1
+            )
+        );
+
+        // Method: returns a FolderItems-compatible collection of the
+        // currently selected items (Count / Item(i)).
+        JS_SetPropertyStr(
+            ctx,
+            obj,
+            "selectedItems",
+
+            JS_NewCFunction(
+                ctx,
+                js_get_selected_items,
+                "selectedItems",
+                0
             )
         );
     }
@@ -3533,7 +3597,170 @@ static JSValue js_folderitem_parent(
     return NewFolderItem(ctx, fiParent);
 }
 
+// ── FolderItems (collection) ─────────────────────────────────────────────
+// A minimal, Shell FolderItems-compatible collection: a "Count" property
+// and an "Item(index)" method, each Item() returning a FolderItem object
+// (see NewFolderItem above).
 
+static void cfolderitems_finalizer(JSRuntime* rt, JSValueConst val)
+{
+    CFolderItems* fis =
+        (CFolderItems*)JS_GetOpaque(val, g_cfolderitems_class_id);
 
+    delete fis;
+}
+
+static JSValue js_folderitems_get_count(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItems* fis =
+        (CFolderItems*)JS_GetOpaque(this_val, g_cfolderitems_class_id);
+
+    if (fis == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewInt32(ctx, (int32_t)fis->items.size());
+}
+
+static JSValue js_folderitems_item(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    CFolderItems* fis =
+        (CFolderItems*)JS_GetOpaque(this_val, g_cfolderitems_class_id);
+
+    if (fis == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    int32_t index = 0;
+    if (argc >= 1) {
+        JS_ToInt32(ctx, &index, argv[0]);
+    }
+
+    if (index < 0 || (size_t)index >= fis->items.size()) {
+        return JS_NULL;
+    }
+
+    // Hand out a fresh FolderItem wrapper that shares (AddRef's) the same
+    // underlying IShellItem, so the collection keeps ownership of its own
+    // copy and can be safely enumerated more than once.
+    CFolderItem* src = fis->items[index];
+    CFolderItem* fi = new CFolderItem();
+    fi->utf8path = src->utf8path;
+    fi->pItem = src->pItem;
+    if (fi->pItem) {
+        fi->pItem->AddRef();
+    }
+
+    return NewFolderItem(ctx, fi);
+}
+
+static JSValue NewFolderItems(JSContext* ctx, CFolderItems* fis)
+{
+    if (!g_cfolderitems_class_id) {
+        JS_NewClassID(JS_GetRuntime(ctx), &g_cfolderitems_class_id);
+        JSClassDef def{};
+        def.class_name = "FolderItems";
+        def.finalizer = cfolderitems_finalizer;
+        JS_NewClass(JS_GetRuntime(ctx), g_cfolderitems_class_id, &def);
+    }
+
+    JSValue obj = JS_NewObjectClass(ctx, g_cfolderitems_class_id);
+
+    if (JS_IsException(obj)) {
+        delete fis;
+        return obj;
+    }
+
+    JS_SetOpaque(obj, fis);
+
+    JSAtom atom = JS_NewAtom(ctx, "Count");
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        atom,
+        JS_NewCFunction(ctx, js_folderitems_get_count, "get", 0),
+        JS_UNDEFINED,
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+    );
+    JS_FreeAtom(ctx, atom);
+
+    JS_SetPropertyStr(
+        ctx,
+        obj,
+        "Item",
+        JS_NewCFunction(ctx, js_folderitems_item, "Item", 1)
+    );
+
+    return obj;
+}
+
+// selectedItems(): returns the FolderItems currently selected in the
+// Explorer element's view (empty collection if nothing is selected or no
+// view exists yet).
+static JSValue js_get_selected_items(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv)
+{
+    UIElement* el = get_element(this_val);
+
+    if (el == nullptr || el->pSink == nullptr || el->pSink->m_pEB == nullptr) {
+        return JS_EXCEPTION;
+    }
+
+    CFolderItems* fis = new CFolderItems();
+
+    IShellView* pView = nullptr;
+    HRESULT hr = el->pSink->m_pEB->GetCurrentView(IID_PPV_ARGS(&pView));
+
+    if (SUCCEEDED(hr) && pView != nullptr) {
+        IDataObject* pDataObj = nullptr;
+
+        hr = pView->GetItemObject(
+            SVGIO_SELECTION,
+            IID_PPV_ARGS(&pDataObj));
+
+        pView->Release();
+
+        if (SUCCEEDED(hr) && pDataObj != nullptr) {
+            IShellItemArray* psia = nullptr;
+
+            hr = SHCreateShellItemArrayFromDataObject(
+                pDataObj,
+                IID_PPV_ARGS(&psia));
+
+            pDataObj->Release();
+
+            if (SUCCEEDED(hr) && psia != nullptr) {
+                DWORD count = 0;
+                psia->GetCount(&count);
+
+                for (DWORD i = 0; i < count; i++) {
+                    IShellItem* pItem = nullptr;
+
+                    if (SUCCEEDED(psia->GetItemAt(i, &pItem)) &&
+                        pItem != nullptr) {
+                        CFolderItem* fi = new CFolderItem();
+                        fi->pItem = pItem; // ownership transferred
+                        fis->items.push_back(fi);
+                    }
+                }
+
+                psia->Release();
+            }
+        }
+    }
+
+    return NewFolderItems(ctx, fis);
+}
 
 #endif
