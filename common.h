@@ -151,6 +151,7 @@ int teStrCmpIWA(LPCWSTR lpStringW, LPCSTR lpStringA);
 UIElement * GetUIElement (HWND hwnd);
 uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr);
 BOOL FireEvent(HWND hwnd, const char* name, JSValue e);
+BOOL TranslateExplorerViewAccelerator(MSG* pMsg);
 BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk);
 BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam);
 std::wstring JS_ToWideString(JSContext* ctx, JSValueConst val);

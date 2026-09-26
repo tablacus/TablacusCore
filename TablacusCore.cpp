@@ -280,6 +280,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0)) {
+        // Let the active Explorer view's IShellView handle its own keyboard
+        // accelerators (Delete, F2, Backspace, Ctrl+A, Ctrl+C/V/X, etc.)
+        // before falling back to the app accelerator table / normal
+        // dispatch. Without this, only the list view's built-in behavior
+        // (cursor keys, Enter) is available.
+        if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
+            TranslateExplorerViewAccelerator(&msg)) {
+            continue;
+        }
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);

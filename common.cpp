@@ -321,6 +321,37 @@ UIElement * GetUIElement(HWND hwnd)
 	return (UIElement*)GetProp(hwnd, L"UIElement");
 }
 
+// Gives the IShellView belonging to an Explorer element a chance to handle
+// keyboard messages (Delete, F2, Backspace, Ctrl+A, Ctrl+C/V/X, etc.) before
+// they are passed to TranslateMessage/DispatchMessage. This mirrors what
+// explorer.exe itself does in its own message loop: IShellView::TranslateAcceleratorW
+// must be called for every keyboard message while an Explorer view (or one of
+// its child windows, e.g. the SysListView32) has focus, otherwise only the
+// control's own built-in behavior (cursor keys, Enter) is available.
+//
+// Returns TRUE if the message was consumed by the shell view and should not
+// be dispatched any further.
+BOOL TranslateExplorerViewAccelerator(MSG* pMsg)
+{
+    if (pMsg == nullptr || pMsg->hwnd == nullptr) {
+        return FALSE;
+    }
+
+    // Walk up from the window that actually has the message (e.g. the
+    // SysListView32, or an in-place rename edit box) until we find a window
+    // that is tagged with a UIElement whose CBrowserSink has an active
+    // IShellView. GetUIElement() itself only checks the exact HWND passed
+    // in, so ancestors are checked explicitly here.
+    for (HWND hwnd = pMsg->hwnd; hwnd != nullptr; hwnd = GetParent(hwnd)) {
+        UIElement* el = GetUIElement(hwnd);
+        if (el != nullptr && el->pSink != nullptr && el->pSink->m_pSV != nullptr) {
+            return el->pSink->m_pSV->TranslateAcceleratorW(pMsg) == S_OK;
+        }
+    }
+
+    return FALSE;
+}
+
 uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
 {
     uint32_t len = 0;
@@ -603,8 +634,7 @@ LRESULT CALLBACK TELVProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UIN
             }
         }
     }
-    DefSubclassProc(hwnd, msg, wParam, lParam);
-    return 0;
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 CBrowserSink::CBrowserSink(HWND hwnd)
@@ -790,11 +820,12 @@ VOID CBrowserSink::SetPropEx()
     if (IUnknown_GetWindow(m_pSV, &m_hwndDV) == S_OK) {
         UIElement* el = GetUIElement(m_hwnd);
         SetProp(m_hwndDV, L"UIElement", el);
-        SetWindowSubclass(m_hwndDV, TELVProc, (UINT_PTR)TELVProc, (DWORD_PTR)this);
+        SetWindowSubclass(m_hwndDV, TELVProc, 0, 0);
 
         m_hwndLV = FindWindowExA(m_hwndDV, 0, WC_LISTVIEWA, NULL);
         if (m_hwndLV) {
             SetProp(m_hwndLV, L"UIElement", el);
+            // Subclass the control to intercept events
         }
 
         /*                    IFolderView* fv = nullptr;
