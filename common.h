@@ -155,6 +155,7 @@ BOOL TranslateExplorerViewAccelerator(MSG* pMsg);
 BOOL FireKeyEvent(HWND hwnd, const char* name, WPARAM vk);
 BOOL FireMouseEvent(HWND hwnd, const char* name, int button, WPARAM wParam, LPARAM lParam);
 std::wstring JS_ToWideString(JSContext* ctx, JSValueConst val);
+void DiscardJSException(JSContext* ctx);
 BOOL teIsSearchFolder(LPCWSTR lpszPath);
 void UnquotePath(std::wstring& path);
 

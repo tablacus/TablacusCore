@@ -344,8 +344,13 @@ BOOL TranslateExplorerViewAccelerator(MSG* pMsg)
     // in, so ancestors are checked explicitly here.
     for (HWND hwnd = pMsg->hwnd; hwnd != nullptr; hwnd = GetParent(hwnd)) {
         UIElement* el = GetUIElement(hwnd);
-        if (el != nullptr && el->pSink != nullptr && el->pSink->m_pSV != nullptr) {
-            return el->pSink->m_pSV->TranslateAcceleratorW(pMsg) == S_OK;
+        if (el != nullptr) {
+            if (CommonProc(hwnd, pMsg->message, pMsg->wParam, pMsg->lParam) != 1) {
+                return TRUE;
+            }
+            if (el->pSink != nullptr && el->pSink->m_pSV != nullptr) {
+                return el->pSink->m_pSV->TranslateAcceleratorW(pMsg) == S_OK;
+            }
         }
     }
 
@@ -363,6 +368,25 @@ uint32_t JS_GetArrayLength(JSContext* ctx, JSValueConst arr)
     JS_FreeValue(ctx, val);
 
     return len;
+}
+
+// Consume the pending exception after a failed JS_Call so it cannot leak into
+// a later, unrelated call (which would then appear to throw a stale error).
+void DiscardJSException(JSContext* ctx)
+{
+    JSValue ex = JS_GetException(ctx);
+    const char* msg = JS_ToCString(ctx, ex);
+    JSValue st = JS_GetPropertyStr(ctx, ex, "stack");
+    const char* stack = JS_IsString(st) ? JS_ToCString(ctx, st) : nullptr;
+    std::string line = "JS exception in event handler: ";
+    line += msg ? msg : "(unknown)";
+    line += "\n";
+    if (stack) { line += stack; line += "\n"; }
+    OutputDebugStringA(line.c_str());
+    if (stack) JS_FreeCString(ctx, stack);
+    if (msg) JS_FreeCString(ctx, msg);
+    JS_FreeValue(ctx, st);
+    JS_FreeValue(ctx, ex);
 }
 
 BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
@@ -400,6 +424,12 @@ BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
         JSValue result = JS_Call(ctx, handlers, el->jsThis, 1, &e);
         JS_FreeValue(ctx, handlers);
 
+        if (JS_IsException(result)) {
+            DiscardJSException(ctx);
+            JS_FreeValue(ctx, e);
+            return FALSE;
+        }
+
         if (!JS_IsUndefined(result)) {
             BOOL b = !JS_ToBool(ctx, result);
             JS_FreeValue(ctx, result);
@@ -419,6 +449,11 @@ BOOL FireEvent(HWND hwnd, const char* name, JSValue e)
             if (JS_IsFunction(ctx, fn)) {
                 JSValue result = JS_Call(ctx, fn, el->jsThis, 1, &e);
                 JS_FreeValue(ctx, fn);
+
+                if (JS_IsException(result)) {
+                    DiscardJSException(ctx);
+                    continue;
+                }
 
                 if (!JS_IsUndefined(result)) {
                     BOOL b =!JS_ToBool(ctx, result);

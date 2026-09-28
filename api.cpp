@@ -26,6 +26,7 @@ VOID CALLBACK FireTimerCallback(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dw
     g_timers.erase(it);
     KillTimer(g_hwndTimer, idEvent);
     JSValue ret = JS_Call(entry.ctx, entry.callback, JS_UNDEFINED, 0, nullptr);
+    if (JS_IsException(ret)) DiscardJSException(entry.ctx);
     JS_FreeValue(entry.ctx, ret);
     JS_FreeValue(entry.ctx, entry.callback);
     JSContext* pctx = nullptr;
@@ -2779,6 +2780,350 @@ static JSValue js_isDarkMode(JSContext* ctx,
     return JS_NewBool(ctx, g_bDarkMode);
 }
 
+// ─── COM automation: api.createObject(progId) ─────────────────────────────
+// Late-bound IDispatch wrapper.  Usage from JS:
+//   const wsh = api.createObject("WScript.Shell");
+//   wsh.Popup("hello");            // method call (name is case-insensitive)
+//   wsh.CurrentDirectory = "C:\\"; // property put
+//   const e = wsh.Exec("cmd /c dir"); // returned COM objects are wrapped too
+#include <oleauto.h>
+#pragma comment(lib, "oleaut32.lib")
+
+struct CComObject
+{
+    IDispatch* pDisp = nullptr;
+    ~CComObject() { if (pDisp) pDisp->Release(); }
+};
+
+static JSClassID g_comobject_class_id = 0;
+static JSClassExoticMethods g_com_exotic = {};
+
+static JSValue NewComObject(JSContext* ctx, IDispatch* pDisp);
+
+static CComObject* GetComObject(JSValueConst val)
+{
+    return (CComObject*)JS_GetOpaque(val, g_comobject_class_id);
+}
+
+static void comobject_finalizer(JSRuntime* rt, JSValue val)
+{
+    delete (CComObject*)JS_GetOpaque(val, g_comobject_class_id);
+}
+
+// VARIANT -> JS value (does not consume src)
+static JSValue VariantToJS(JSContext* ctx, const VARIANT& src)
+{
+    VARIANT v;
+    VariantInit(&v);
+    if (FAILED(VariantCopyInd(&v, const_cast<VARIANT*>(&src)))) {
+        return JS_UNDEFINED;
+    }
+    JSValue r = JS_UNDEFINED;
+    switch (v.vt) {
+    case VT_EMPTY:    break;
+    case VT_NULL:     r = JS_NULL; break;
+    case VT_BOOL:     r = JS_NewBool(ctx, v.boolVal != VARIANT_FALSE); break;
+    case VT_I1:       r = JS_NewInt32(ctx, v.cVal); break;
+    case VT_UI1:      r = JS_NewInt32(ctx, v.bVal); break;
+    case VT_I2:       r = JS_NewInt32(ctx, v.iVal); break;
+    case VT_UI2:      r = JS_NewInt32(ctx, v.uiVal); break;
+    case VT_I4:
+    case VT_INT:      r = JS_NewInt32(ctx, v.lVal); break;
+    case VT_UI4:
+    case VT_UINT:     r = JS_NewInt64(ctx, v.ulVal); break;
+    case VT_I8:       r = JS_NewInt64(ctx, v.llVal); break;
+    case VT_UI8:      r = JS_NewFloat64(ctx, (double)v.ullVal); break;
+    case VT_R4:       r = JS_NewFloat64(ctx, v.fltVal); break;
+    case VT_R8:       r = JS_NewFloat64(ctx, v.dblVal); break;
+    case VT_BSTR:
+        r = JS_NewString(ctx, WideToUtf8(v.bstrVal ? v.bstrVal : L"").c_str());
+        break;
+    case VT_DISPATCH:
+        r = v.pdispVal ? NewComObject(ctx, v.pdispVal) : JS_NULL;
+        break;
+    case VT_UNKNOWN: {
+        IDispatch* pd = nullptr;
+        if (v.punkVal && SUCCEEDED(v.punkVal->QueryInterface(IID_PPV_ARGS(&pd)))) {
+            r = NewComObject(ctx, pd);
+            pd->Release();
+        } else {
+            r = JS_NULL;
+        }
+        break;
+    }
+    default: {
+        // DATE, CURRENCY, DECIMAL, ... : fall back to their string form
+        VARIANT s;
+        VariantInit(&s);
+        if (SUCCEEDED(VariantChangeType(&s, &v, 0, VT_BSTR)) && s.bstrVal) {
+            r = JS_NewString(ctx, WideToUtf8(s.bstrVal).c_str());
+        }
+        VariantClear(&s);
+        break;
+    }
+    }
+    VariantClear(&v);
+    return r;
+}
+
+// JS value -> VARIANT (caller must VariantClear). Returns false + pending
+// exception on failure.
+static bool JSToVariant(JSContext* ctx, JSValueConst val, VARIANT* out)
+{
+    VariantInit(out);
+    if (JS_IsUndefined(val)) {
+        out->vt = VT_ERROR;                 // "argument omitted"
+        out->scode = DISP_E_PARAMNOTFOUND;
+        return true;
+    }
+    if (JS_IsNull(val)) {
+        out->vt = VT_NULL;
+        return true;
+    }
+    if (JS_IsBool(val)) {
+        out->vt = VT_BOOL;
+        out->boolVal = JS_ToBool(ctx, val) ? VARIANT_TRUE : VARIANT_FALSE;
+        return true;
+    }
+    if (JS_IsNumber(val)) {
+        double d = 0;
+        if (JS_ToFloat64(ctx, &d, val) < 0) return false;
+        if (d == (double)(int32_t)d) {
+            out->vt = VT_I4;
+            out->lVal = (LONG)d;
+        } else {
+            out->vt = VT_R8;
+            out->dblVal = d;
+        }
+        return true;
+    }
+    if (JS_IsObject(val)) {
+        CComObject* p = GetComObject(val);
+        if (p && p->pDisp) {
+            out->vt = VT_DISPATCH;
+            out->pdispVal = p->pDisp;
+            p->pDisp->AddRef();
+            return true;
+        }
+    }
+    // strings and everything else: use the string form
+    const char* utf8 = JS_ToCString(ctx, val);
+    if (!utf8) return false;            // exception already thrown by QuickJS
+    std::wstring w = Utf8ToWide(utf8);
+    JS_FreeCString(ctx, utf8);
+    out->vt = VT_BSTR;
+    out->bstrVal = SysAllocStringLen(w.c_str(), (UINT)w.size());
+    return true;
+}
+
+static std::string ComErrorMessage(HRESULT hr, EXCEPINFO& ei)
+{
+    std::string msg;
+    if (hr == DISP_E_EXCEPTION) {
+        if (ei.pfnDeferredFillIn) ei.pfnDeferredFillIn(&ei);
+        if (ei.bstrDescription) msg = WideToUtf8(ei.bstrDescription);
+    }
+    if (msg.empty()) {
+        wchar_t buf[512] = {};
+        DWORD n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr, (DWORD)hr, 0, buf, _countof(buf), nullptr);
+        while (n && (buf[n - 1] == L'\r' || buf[n - 1] == L'\n' || buf[n - 1] == L' ')) buf[--n] = 0;
+        msg = WideToUtf8(buf);
+        char code[32];
+        snprintf(code, sizeof(code), " (0x%08lX)", (unsigned long)hr);
+        msg += code;
+    }
+    SysFreeString(ei.bstrSource);
+    SysFreeString(ei.bstrDescription);
+    SysFreeString(ei.bstrHelpFile);
+    return msg;
+}
+
+static JSValue ComInvoke(JSContext* ctx, IDispatch* pDisp, DISPID id, WORD flags,
+    int argc, JSValueConst* argv)
+{
+    // IDispatch::Invoke wants the arguments in reverse order
+    std::vector<VARIANT> args((size_t)argc);
+    for (int i = 0; i < argc; i++) {
+        if (!JSToVariant(ctx, argv[argc - 1 - i], &args[i])) {
+            for (int j = 0; j < i; j++) VariantClear(&args[j]);
+            return JS_EXCEPTION;
+        }
+    }
+    DISPPARAMS dp{};
+    dp.cArgs = (UINT)argc;
+    dp.rgvarg = argc ? args.data() : nullptr;
+    DISPID putId = DISPID_PROPERTYPUT;
+    const bool isPut = (flags & (DISPATCH_PROPERTYPUT | DISPATCH_PROPERTYPUTREF)) != 0;
+    if (isPut) {
+        dp.cNamedArgs = 1;
+        dp.rgdispidNamedArgs = &putId;
+    }
+
+    VARIANT result;
+    VariantInit(&result);
+    EXCEPINFO ei{};
+    UINT argErr = 0;
+    HRESULT hr = pDisp->Invoke(id, IID_NULL, LOCALE_USER_DEFAULT, flags, &dp,
+        isPut ? nullptr : &result, &ei, &argErr);
+    for (auto& a : args) VariantClear(&a);
+
+    if (FAILED(hr)) {
+        std::string msg = ComErrorMessage(hr, ei);
+        return JS_ThrowInternalError(ctx, "%s", msg.c_str());
+    }
+    JSValue r = VariantToJS(ctx, result);
+    VariantClear(&result);
+    return r;
+}
+
+// True if the member is a parameterless property getter, i.e. `obj.Name`
+// should yield the value rather than a callable.  Without type info we
+// return a callable for everything.
+static bool ComIsSimpleProperty(IDispatch* pDisp, DISPID id)
+{
+    ComPtr<ITypeInfo> ti;
+    if (FAILED(pDisp->GetTypeInfo(0, LOCALE_USER_DEFAULT, &ti)) || !ti) return false;
+    TYPEATTR* ta = nullptr;
+    if (FAILED(ti->GetTypeAttr(&ta)) || !ta) return false;
+    bool result = false;
+    for (UINT i = 0; i < ta->cFuncs; i++) {
+        FUNCDESC* fd = nullptr;
+        if (FAILED(ti->GetFuncDesc(i, &fd)) || !fd) continue;
+        if (fd->memid == id && (fd->invkind & INVOKE_PROPERTYGET) && fd->cParams == 0) {
+            result = true;
+        }
+        ti->ReleaseFuncDesc(fd);
+        if (result) break;
+    }
+    ti->ReleaseTypeAttr(ta);
+    return result;
+}
+
+static bool ComGetDispId(JSContext* ctx, IDispatch* pDisp, JSAtom atom, DISPID* pId)
+{
+    const char* name = JS_AtomToCString(ctx, atom);
+    if (!name) return false;
+    std::wstring w = Utf8ToWide(name);
+    JS_FreeCString(ctx, name);
+    LPOLESTR pw = (LPOLESTR)w.c_str();
+    return SUCCEEDED(pDisp->GetIDsOfNames(IID_NULL, &pw, 1, LOCALE_USER_DEFAULT, pId));
+}
+
+// Callable returned for COM methods: func_data = [comObject, dispid]
+static JSValue js_com_call(JSContext* ctx, JSValueConst this_val, int argc,
+    JSValueConst* argv, int magic, JSValueConst* func_data)
+{
+    CComObject* p = GetComObject(func_data[0]);
+    if (!p || !p->pDisp) return JS_ThrowTypeError(ctx, "invalid COM object");
+    int32_t id = 0;
+    JS_ToInt32(ctx, &id, func_data[1]);
+    return ComInvoke(ctx, p->pDisp, (DISPID)id,
+        DISPATCH_METHOD | DISPATCH_PROPERTYGET, argc, argv);
+}
+
+static JSValue js_com_toString(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    return JS_NewString(ctx, "[object COMObject]");
+}
+
+static JSValue com_get_property(JSContext* ctx, JSValueConst obj, JSAtom atom, JSValueConst receiver)
+{
+    CComObject* p = GetComObject(obj);
+    if (!p || !p->pDisp) return JS_UNDEFINED;
+
+    DISPID id;
+    if (!ComGetDispId(ctx, p->pDisp, atom, &id)) {
+        const char* name = JS_AtomToCString(ctx, atom);
+        bool isToString = name && strcmp(name, "toString") == 0;
+        if (name) JS_FreeCString(ctx, name);
+        if (isToString) return JS_NewCFunction(ctx, js_com_toString, "toString", 0);
+        return JS_UNDEFINED;
+    }
+    if (ComIsSimpleProperty(p->pDisp, id)) {
+        return ComInvoke(ctx, p->pDisp, id, DISPATCH_PROPERTYGET, 0, nullptr);
+    }
+    JSValue data[2] = { obj, JS_NewInt32(ctx, (int32_t)id) };
+    return JS_NewCFunctionData(ctx, js_com_call, 0, 0, 2, data);
+}
+
+static int com_set_property(JSContext* ctx, JSValueConst obj, JSAtom atom,
+    JSValueConst value, JSValueConst receiver, int flags)
+{
+    CComObject* p = GetComObject(obj);
+    if (!p || !p->pDisp) return FALSE;
+
+    DISPID id;
+    if (!ComGetDispId(ctx, p->pDisp, atom, &id)) {
+        JS_ThrowTypeError(ctx, "COM object has no such property");
+        return -1;
+    }
+    WORD f = (JS_IsObject(value) && GetComObject(value))
+        ? DISPATCH_PROPERTYPUTREF : DISPATCH_PROPERTYPUT;
+    JSValue r = ComInvoke(ctx, p->pDisp, id, f, 1, &value);
+    if (JS_IsException(r)) return -1;
+    JS_FreeValue(ctx, r);
+    return TRUE;
+}
+
+static void EnsureComClass(JSContext* ctx)
+{
+    if (g_comobject_class_id) return;
+    JSRuntime* rt = JS_GetRuntime(ctx);
+    JS_NewClassID(rt, &g_comobject_class_id);
+    g_com_exotic.get_property = com_get_property;
+    g_com_exotic.set_property = com_set_property;
+    JSClassDef def{};
+    def.class_name = "COMObject";
+    def.finalizer = comobject_finalizer;
+    def.exotic = &g_com_exotic;
+    JS_NewClass(rt, g_comobject_class_id, &def);
+}
+
+// Wraps pDisp (takes its own reference; caller keeps theirs)
+static JSValue NewComObject(JSContext* ctx, IDispatch* pDisp)
+{
+    EnsureComClass(ctx);
+    JSValue obj = JS_NewObjectClass(ctx, g_comobject_class_id);
+    if (JS_IsException(obj)) return obj;
+    CComObject* p = new CComObject();
+    p->pDisp = pDisp;
+    pDisp->AddRef();
+    JS_SetOpaque(obj, p);
+    return obj;
+}
+
+// api.createObject("WScript.Shell")  /  api.createObject("{GUID}")
+static JSValue js_createObject(JSContext* ctx, JSValueConst this_val, int argc, JSValueConst* argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "createObject requires a ProgID or CLSID");
+    }
+    const char* progUtf8 = JS_ToCString(ctx, argv[0]);
+    if (!progUtf8) return JS_EXCEPTION;
+    std::wstring prog = Utf8ToWide(progUtf8);
+    JS_FreeCString(ctx, progUtf8);
+    if (prog.empty()) {
+        return JS_ThrowTypeError(ctx, "createObject: ProgID must be a non-empty string");
+    }
+    CLSID clsid;
+    HRESULT hr = (prog[0] == L'{')
+        ? CLSIDFromString(prog.c_str(), &clsid)
+        : CLSIDFromProgID(prog.c_str(), &clsid);
+    if (FAILED(hr)) {
+        return JS_ThrowInternalError(ctx, "createObject: unknown ProgID/CLSID '%s'",
+            WideToUtf8(prog.c_str()).c_str());
+    }
+    ComPtr<IDispatch> pDisp;
+    hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+        IID_PPV_ARGS(&pDisp));
+    if (FAILED(hr)) {
+        return JS_ThrowInternalError(ctx, "createObject: CoCreateInstance failed (0x%08lX)",
+            (unsigned long)hr);
+    }
+    return NewComObject(ctx, pDisp.Get());
+}
+
 // Forward declarations: defined after js_api_funcs
 static JSValue js_ImageList_Create(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv);
 static JSValue js_SHGetSystemImageList(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv);
@@ -2906,6 +3251,7 @@ static const JSCFunctionListEntry js_api_funcs[] = {
 
     // Dark mode
     JS_CFUNC_DEF("isDarkMode",            0, js_isDarkMode),
+    JS_CFUNC_DEF("createObject",          1, js_createObject),
 
     // ImageList API
     JS_CFUNC_DEF("ImageList_Create",      2, js_ImageList_Create),
@@ -3598,8 +3944,8 @@ static JSValue js_folderitem_parent(
 }
 
 // ── FolderItems (collection) ─────────────────────────────────────────────
-// A minimal, Shell FolderItems-compatible collection: a "Count" property
-// and an "Item(index)" method, each Item() returning a FolderItem object
+// A minimal, Shell FolderItems-compatible collection: a "count" property
+// and an "item(index)" method, each Item() returning a FolderItem object
 // (see NewFolderItem above).
 
 static void cfolderitems_finalizer(JSRuntime* rt, JSValueConst val)
@@ -3662,6 +4008,18 @@ static JSValue js_folderitems_item(
     return NewFolderItem(ctx, fi);
 }
 
+// For selected[i]. Endows 'magic' with an index so that accessing it executes the same process as item(i).
+static JSValue js_folderitems_get_index(
+    JSContext* ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst* argv,
+    int magic)
+{
+    JSValue idx = JS_NewInt32(ctx, magic);
+    return js_folderitems_item(ctx, this_val, 1, &idx);
+}
+
 static JSValue NewFolderItems(JSContext* ctx, CFolderItems* fis)
 {
     if (!g_cfolderitems_class_id) {
@@ -3681,7 +4039,18 @@ static JSValue NewFolderItems(JSContext* ctx, CFolderItems* fis)
 
     JS_SetOpaque(obj, fis);
 
-    JSAtom atom = JS_NewAtom(ctx, "Count");
+    JSAtom atom = JS_NewAtom(ctx, "length");
+    JS_DefinePropertyGetSet(
+        ctx,
+        obj,
+        atom,
+        JS_NewCFunction(ctx, js_folderitems_get_count, "get", 0),
+        JS_UNDEFINED,
+        JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+    );
+    JS_FreeAtom(ctx, atom);
+
+    atom = JS_NewAtom(ctx, "count");
     JS_DefinePropertyGetSet(
         ctx,
         obj,
@@ -3695,10 +4064,61 @@ static JSValue NewFolderItems(JSContext* ctx, CFolderItems* fis)
     JS_SetPropertyStr(
         ctx,
         obj,
-        "Item",
-        JS_NewCFunction(ctx, js_folderitems_item, "Item", 1)
+        "item",
+        JS_NewCFunction(ctx, js_folderitems_item, "item", 1)
     );
 
+    // ── Array-like access ──────────────────────────────
+
+        // length (same value as Count; non-enumerable so it doesn't appear in for-in)
+    atom = JS_NewAtom(ctx, "length");
+    JS_DefinePropertyGetSet(
+        ctx, obj, atom,
+        JS_NewCFunction(ctx, js_folderitems_get_count, "get", 0),
+        JS_UNDEFINED,
+        JS_PROP_CONFIGURABLE
+    );
+    JS_FreeAtom(ctx, atom);
+
+    // [0], [1], ... (using a getter, so FolderItem isn't created until accessed)
+    for (size_t i = 0; i < fis->items.size(); i++) {
+        atom = JS_NewAtomUInt32(ctx, (uint32_t)i);
+        JS_DefinePropertyGetSet(
+            ctx, obj, atom,
+            JS_NewCFunctionMagic(ctx, js_folderitems_get_index,
+                "get", 0, JS_CFUNC_generic_magic, (int)i),
+            JS_UNDEFINED,
+            JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE
+        );
+        JS_FreeAtom(ctx, atom);
+    }
+
+    // For `for (const it of selected)` support: reuse Array.prototype.values
+    {
+        JSValue global = JS_GetGlobalObject(ctx);
+        JSValue symCtor = JS_GetPropertyStr(ctx, global, "Symbol");
+        JSValue symIter = JS_GetPropertyStr(ctx, symCtor, "iterator");
+        JSValue arrCtor = JS_GetPropertyStr(ctx, global, "Array");
+        JSValue arrProto = JS_GetPropertyStr(ctx, arrCtor, "prototype");
+        JSValue values = JS_GetPropertyStr(ctx, arrProto, "values");
+
+        JSAtom iterAtom = JS_ValueToAtom(ctx, symIter);
+        if (iterAtom != JS_ATOM_NULL) {
+            if (JS_IsFunction(ctx, values)) {
+                JS_DefinePropertyValue(ctx, obj, iterAtom,
+                    JS_DupValue(ctx, values),
+                    JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
+            }
+            JS_FreeAtom(ctx, iterAtom);
+        }
+
+        JS_FreeValue(ctx, values);
+        JS_FreeValue(ctx, arrProto);
+        JS_FreeValue(ctx, arrCtor);
+        JS_FreeValue(ctx, symIter);
+        JS_FreeValue(ctx, symCtor);
+        JS_FreeValue(ctx, global);
+    }
     return obj;
 }
 

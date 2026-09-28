@@ -1,6 +1,7 @@
 import * as api from "api";
 import { TabBar } from "./tabbar.js";
 
+const wsh = api.createObject("WScript.Shell");
 // ── Window ────────────────────────────────────────────────────────────────
 const window = api.CreateWindow({
     className: "TablacusCore",
@@ -204,7 +205,21 @@ function createTabContent(tabId) {
                 if (tabbar._activeId === tabId) {
                     window.text = folder.name;
                 }
-            }
+            },
+            keydown: (e) => {
+                if (e.shiftKey && /f2/i.test(e.key)) {
+                    const selected = exp.selectedItems();
+                    window.text = [e.shiftKey, e.key, selected?.length].join(" : ");
+                    if (selected?.length) {
+                        const vscode = 'C:\\Program Files\\Microsoft VS Code\\Code.exe';
+                        try {
+                            wsh.Exec(vscode + " " + selected[0].path);
+                        } catch (e) {
+                            wsh.Popup(e.stack ?? e.description ?? e.toString());
+                        }
+                    }
+                }
+           },
         }
     });
 

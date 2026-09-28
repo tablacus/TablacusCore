@@ -285,8 +285,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         // before falling back to the app accelerator table / normal
         // dispatch. Without this, only the list view's built-in behavior
         // (cursor keys, Enter) is available.
-        if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
-            TranslateExplorerViewAccelerator(&msg)) {
+        if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST  && TranslateExplorerViewAccelerator(&msg)) {
             continue;
         }
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
